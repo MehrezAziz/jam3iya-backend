@@ -1,0 +1,1890 @@
+// =====================================================================
+// Jam3iya — Prisma schema
+// Multi-tenant charity management platform.
+//
+// Companion docs:
+//   - docs/entity-model.md
+//   - docs/permission-matrix.md
+//   - docs/security-privacy-spec.md
+//   - docs/design.md
+//
+// Conventions:
+//   - All UUIDs are v7 (sortable).
+//   - Money is amount_minor (BigInt) + currency (ISO 4217). Default TND.
+//   - Timestamps are timestamptz (DateTime in Prisma).
+//   - Soft delete via deletedAt.
+//   - Encrypted (PII-HIGH) fields are stored as Bytes (AES-256-GCM ciphertext).
+//   - Searchable encrypted fields keep a paired *_hash column = HMAC-SHA256.
+//   - Postgres Row-Level Security and CHECK constraints are added in raw SQL
+//     migrations (Prisma cannot express them directly).
+// =====================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto, citext, uuid_ossp(map: "uuid-ossp")]
+}
+
+// =====================================================================
+// ENUMS
+// =====================================================================
+
+enum OrganizationStatus {
+  active
+  suspended
+  closed
+}
+
+enum UserKind {
+  staff
+  donor
+}
+
+enum UserStatus {
+  invited
+  active
+  suspended
+  locked
+}
+
+enum TwoFactorMethod {
+  totp
+  webauthn
+}
+
+enum Gender {
+  male
+  female
+}
+
+enum MaritalStatus {
+  single
+  married
+  divorced
+  widowed
+  separated
+}
+
+enum BeneficiaryStatus {
+  draft
+  pending_review
+  active
+  on_hold
+  archived
+}
+
+enum CaseState {
+  submitted
+  under_review
+  verified
+  approved
+  rejected
+  receiving_aid
+  closed
+  archived
+}
+
+enum ReviewDecision {
+  pending
+  approved
+  rejected
+  more_info_needed
+}
+
+enum SchoolLevel {
+  none
+  primary
+  preparatory
+  secondary
+  university
+}
+
+enum HousingTenure {
+  owned
+  rented
+  hosted
+  homeless
+  other
+}
+
+enum HousingCondition {
+  good
+  fair
+  poor
+  unsafe
+}
+
+enum DiseaseStatus {
+  active
+  controlled
+  recovered
+}
+
+enum TreatmentStatus {
+  pending
+  ongoing
+  completed
+}
+
+enum SocialCoverageType {
+  cnss
+  cnam
+  yellow_notebook
+  white_notebook
+  monthly_grant
+  none
+  other
+}
+
+enum DocumentOwnerType {
+  beneficiary
+  spouse
+  child
+  job
+  housing
+  disease
+  serious_illness
+  social_coverage
+  donation
+  expense
+  bill
+  organization
+}
+
+enum DocumentCategory {
+  cin
+  medical
+  school
+  housing_proof
+  salary_proof
+  birth_certificate
+  marriage_certificate
+  divorce_certificate
+  death_certificate
+  unemployment_proof
+  bank_statement
+  utility_bill
+  signed_consent
+  other
+}
+
+enum VirusScanStatus {
+  pending
+  clean
+  infected
+  error
+}
+
+enum PhotoVisibility {
+  internal
+  donor
+  public
+}
+
+enum ConsentPurpose {
+  store_personal_data
+  share_photo_with_donors
+  share_name_with_donors
+  cross_org_dedup
+  cross_org_share_amount
+  marketing
+  publish_in_transparency
+}
+
+enum JobSubjectType {
+  beneficiary
+  spouse
+}
+
+enum DonorVisibility {
+  always
+  when_paid_out
+  never
+}
+
+enum DonationKind {
+  cash
+  card
+  bank_transfer
+  gateway
+  in_kind
+}
+
+enum PledgeState {
+  open
+  partially_paid
+  paid
+  overdue
+  cancelled
+}
+
+enum RecurringInterval {
+  weekly
+  monthly
+  quarterly
+  yearly
+}
+
+enum PaymentProvider {
+  flouci
+  manual_cash
+  manual_card
+  bank_transfer
+  other
+}
+
+enum PaymentStatus {
+  initiated
+  processing
+  succeeded
+  failed
+  refunded
+  chargeback
+}
+
+enum InventoryCategory {
+  food
+  medicine
+  clothing
+  school_supplies
+  hygiene
+  blankets
+  furniture
+  other
+}
+
+enum StockMovementType {
+  in
+  out
+  adjustment
+  expired_writeoff
+  damaged_writeoff
+}
+
+enum DistributionKind {
+  cash
+  goods
+  mixed
+}
+
+enum DistributionStatus {
+  planned
+  ready
+  delivered
+  cancelled
+}
+
+enum DistributionLineKind {
+  cash
+  item
+}
+
+enum CampaignState {
+  draft
+  active
+  closed
+}
+
+enum BillRecipientType {
+  donor
+  beneficiary
+  external
+  organization
+}
+
+enum BillStatus {
+  issued
+  cancelled
+}
+
+enum LedgerReferenceType {
+  donation
+  distribution
+  expense
+  adjustment
+  refund
+  writeoff
+}
+
+enum NotificationChannel {
+  in_app
+  email
+  sms
+  whatsapp
+}
+
+enum NotificationTopic {
+  pledge_reminder_donor
+  pledge_reminder_staff
+  pledge_overdue_staff
+  donation_received
+  receipt_issued
+  aid_ready_for_pickup
+  case_verification_due
+  case_state_changed
+  document_expiring
+  stock_expiring
+  stock_low
+  user_invited
+  login_new_device
+  password_changed
+  two_factor_changed
+  webhook_signature_failed
+  break_the_glass
+  system
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  failed
+  read
+}
+
+enum VolunteerShiftState {
+  scheduled
+  confirmed
+  present
+  absent
+  cancelled
+}
+
+enum AuditOutcome {
+  allow
+  deny
+  error
+}
+
+enum PledgeReminderChannel {
+  email
+  sms
+  whatsapp
+  phone_call
+  in_person
+}
+
+// =====================================================================
+// TENANT & IDENTITY
+// =====================================================================
+
+model Organization {
+  id                 String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  legalName          String
+  slug               String             @unique
+  fiscalId           String? // matricule fiscal (Tunisia)
+  country            String             @default("TN") @db.Char(2)
+  defaultCurrency    String             @default("TND") @db.Char(3)
+  defaultLanguage    String             @default("ar") @db.VarChar(8)
+  timezone           String             @default("Africa/Tunis")
+  logoFileId         String?            @db.Uuid
+  address            String?
+  phone              String?
+  email              String?
+  website            String?
+  status             OrganizationStatus @default(active)
+  settings           Json               @default("{}")
+  // Per-tenant encryption metadata
+  kmsKeyId           String? // KMS key id for PII-HIGH columns
+  kmsKeyVersion      Int                @default(1)
+  searchPepperHash   Bytes? // HMAC pepper for searchable encryption (wrapped)
+  // Public transparency page (opt-in, default ON for new orgs)
+  publicPageEnabled  Boolean            @default(true)
+  publicPageConfig   Json               @default("{}")
+  // Cross-org dedup participation (opt-in by org; per-PP consent still required)
+  dedupParticipating Boolean            @default(false)
+  // Bill defaults
+  defaultBillSeries  String             @default("RECEIPT")
+  // Timestamps & soft delete
+  createdAt          DateTime           @default(now()) @db.Timestamptz
+  updatedAt          DateTime           @updatedAt @db.Timestamptz
+  deletedAt          DateTime?          @db.Timestamptz
+
+  // Relations
+  departments         Department[]
+  users               User[]
+  roles               Role[]
+  beneficiaries       Beneficiary[]
+  donors              Donor[]
+  donations           Donation[]
+  pledges             Pledge[]
+  recurringDonations  RecurringDonation[]
+  distributions       Distribution[]
+  campaigns           Campaign[]
+  occasions           Occasion[]
+  inventoryItems      InventoryItem[]
+  expenses            Expense[]
+  expenseCategories   ExpenseCategory[]
+  bills               Bill[]
+  billTemplates       BillTemplate[]
+  ledgerEntries       LedgerEntry[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  volunteerShifts     VolunteerShift[]
+  documents           Document[]
+  files               StoredFile[]
+  consents            Consent[]
+  consentVersions     ConsentVersion[]
+  billNumberCounters  BillNumberCounter[]
+  beneficiaryCounters BeneficiaryCounter[]
+  userInvites         UserInvite[]
+  paymentProviders    PaymentProviderConfig[]
+
+  @@index([slug])
+  @@index([status])
+  @@map("organization")
+}
+
+model Department {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId     String    @db.Uuid
+  parentDepartmentId String?   @db.Uuid
+  name               String
+  description        String?
+  isMain             Boolean   @default(false)
+  createdAt          DateTime  @default(now()) @db.Timestamptz
+  updatedAt          DateTime  @updatedAt @db.Timestamptz
+  deletedAt          DateTime? @db.Timestamptz
+
+  organization     Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  parentDepartment Department?          @relation("DepartmentHierarchy", fields: [parentDepartmentId], references: [id], onDelete: Restrict)
+  childDepartments Department[]         @relation("DepartmentHierarchy")
+  userAssignments  UserDepartmentRole[]
+  cases            Case[]
+  shifts           VolunteerShift[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([organizationId, isMain])
+  @@map("department")
+}
+
+model User {
+  id                   String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId       String          @db.Uuid
+  kind                 UserKind        @default(staff)
+  email                String          @db.Citext
+  emailVerifiedAt      DateTime?       @db.Timestamptz
+  phone                String?
+  phoneVerifiedAt      DateTime?       @db.Timestamptz
+  fullName             String
+  passwordHash         String? // null for invited users until they set it
+  status               UserStatus      @default(invited)
+  failedLoginCount     Int             @default(0)
+  lockedUntil          DateTime?       @db.Timestamptz
+  lastLoginAt          DateTime?       @db.Timestamptz
+  lastLoginIp          String?         @db.Inet
+  lastPasswordChangeAt DateTime?       @db.Timestamptz
+  mustChangePassword   Boolean         @default(false)
+  twoFactorEnabled     Boolean         @default(false)
+  locale               String          @default("ar") @db.VarChar(8)
+  timezone             String          @default("Africa/Tunis")
+  // Donor-only fields
+  pseudo               String? // alias displayed publicly
+  acceptsTaxReceipt    Boolean         @default(false)
+  revealToPp           Boolean         @default(false)
+  donorVisibility      DonorVisibility @default(when_paid_out)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization    Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  twoFactor       UserTwoFactor[]
+  sessions        UserSession[]
+  invites         UserInvite[]         @relation("InvitedBy")
+  receivedInvite  UserInvite?
+  departmentRoles UserDepartmentRole[]
+  donorProfile    Donor?
+  uploadedFiles   StoredFile[]         @relation("FileUploader")
+  auditLogs       AuditLog[]           @relation("AuditActor")
+  notifications   Notification[]
+  shifts          VolunteerShift[]
+  // Generic creator/updater backrefs are intentionally omitted to keep the schema readable;
+  // who-did-what is captured by AuditLog.
+
+  @@unique([organizationId, email])
+  @@index([organizationId])
+  @@index([organizationId, kind])
+  @@index([organizationId, status])
+  @@map("user")
+}
+
+model UserInvite {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  email          String    @db.Citext
+  fullName       String
+  invitedById    String    @db.Uuid
+  invitedUserId  String?   @unique @db.Uuid
+  tokenHash      String    @unique
+  expiresAt      DateTime  @db.Timestamptz
+  acceptedAt     DateTime? @db.Timestamptz
+  revokedAt      DateTime? @db.Timestamptz
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  invitedBy    User         @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Restrict)
+  invitedUser  User?        @relation(fields: [invitedUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("user_invite")
+}
+
+model UserTwoFactor {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String          @db.Uuid
+  method           TwoFactorMethod
+  secretEnc        Bytes // AES-256-GCM ciphertext (TOTP secret or WebAuthn metadata)
+  recoveryCodesEnc Bytes? // hashed recovery codes (JSON array, encrypted)
+  confirmedAt      DateTime?       @db.Timestamptz
+  lastUsedAt       DateTime?       @db.Timestamptz
+  createdAt        DateTime        @default(now()) @db.Timestamptz
+  deletedAt        DateTime?       @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, method])
+  @@index([userId])
+  @@map("user_two_factor")
+}
+
+model UserSession {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String    @db.Uuid
+  refreshTokenHash String    @unique
+  ip               String?   @db.Inet
+  userAgent        String?
+  device           String?
+  createdAt        DateTime  @default(now()) @db.Timestamptz
+  lastSeenAt       DateTime  @default(now()) @db.Timestamptz
+  expiresAt        DateTime  @db.Timestamptz
+  revokedAt        DateTime? @db.Timestamptz
+  revokedReason    String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("user_session")
+}
+
+model Role {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?   @db.Uuid // null for system-wide roles
+  name           String
+  description    String?
+  isSystem       Boolean   @default(false)
+  privilegeLevel Int       @default(0) // for "<= own role" checks
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @db.Timestamptz
+  deletedAt      DateTime? @db.Timestamptz
+
+  organization    Organization?        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  permissions     RolePermission[]
+  userAssignments UserDepartmentRole[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("role")
+}
+
+model Permission {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // Format: resource.action e.g. beneficiary.read.full
+  code        String   @unique
+  resource    String
+  action      String
+  description String?
+  isDangerous Boolean  @default(false) // requires fresh 2FA + reason
+  createdAt   DateTime @default(now()) @db.Timestamptz
+
+  roles RolePermission[]
+
+  @@index([resource])
+  @@map("permission")
+}
+
+model RolePermission {
+  roleId       String @db.Uuid
+  permissionId String @db.Uuid
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+  @@map("role_permission")
+}
+
+model UserDepartmentRole {
+  id                String                     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String                     @db.Uuid
+  departmentId      String                     @db.Uuid
+  roleId            String                     @db.Uuid
+  ppVisibilityScope BeneficiaryVisibilityScope @default(department)
+  validFrom         DateTime                   @default(now()) @db.Timestamptz
+  validTo           DateTime?                  @db.Timestamptz
+  notes             String?
+  createdAt         DateTime                   @default(now()) @db.Timestamptz
+  updatedAt         DateTime                   @updatedAt @db.Timestamptz
+  deletedAt         DateTime?                  @db.Timestamptz
+
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  @@unique([userId, departmentId, roleId])
+  @@index([userId])
+  @@index([departmentId])
+  @@index([roleId])
+  @@map("user_department_role")
+}
+
+enum BeneficiaryVisibilityScope {
+  none
+  department
+  organization
+}
+
+// =====================================================================
+// BENEFICIARY (PP) DOMAIN
+// =====================================================================
+
+// Sequence-style counter table to produce gap-free human-readable codes
+// like "PP-2026-00012" without relying on global Postgres sequences (which
+// span tenants).
+model BeneficiaryCounter {
+  organizationId String @db.Uuid
+  year           Int
+  lastValue      Int    @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, year])
+  @@map("beneficiary_counter")
+}
+
+model Beneficiary {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId      String            @db.Uuid
+  code                String // e.g. PP-2026-00012, unique per org
+  // Identity (encrypted at rest)
+  firstNameEnc        Bytes // [PII-HIGH]
+  lastNameEnc         Bytes // [PII-HIGH]
+  fullNameHash        Bytes // HMAC for search
+  gender              Gender
+  dateOfBirth         DateTime?         @db.Date // [PII-MED]
+  maritalStatus       MaritalStatus     @default(single)
+  cinEnc              Bytes? // [PII-HIGH]
+  cinHash             Bytes? // unique per org, used for search and dedup
+  phoneEnc            Bytes? // [PII-HIGH]
+  phoneHash           Bytes?
+  addressEnc          Bytes? // [PII-HIGH]
+  region              String? // governorate / delegation, used for analytics
+  city                String?
+  // Donor-facing
+  photoConsent        Boolean           @default(false)
+  publicAlias         String? // shown when full identity is hidden
+  // Workflow
+  status              BeneficiaryStatus @default(draft)
+  primaryDepartmentId String?           @db.Uuid // optional convenience pointer
+  lastVerifiedAt      DateTime?         @db.Timestamptz
+  validUntil          DateTime?         @db.Date // re-verification deadline
+  notesEnc            Bytes? // [PII-HIGH] free-form internal notes
+
+  // Tunisia-specific helpful flags (denormalized for fast filtering)
+  hasCnss           Boolean @default(false)
+  hasCnam           Boolean @default(false)
+  hasYellowNotebook Boolean @default(false)
+  hasWhiteNotebook  Boolean @default(false)
+  hasMonthlyGrant   Boolean @default(false)
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  spouse           Spouse?
+  children         Child[]
+  jobs             Job[]
+  housings         Housing[]
+  diseases         Disease[]
+  seriousIllnesses SeriousIllness[]
+  socialCoverages  SocialCoverage[]
+  photos           BeneficiaryPhoto[]
+  cases            Case[]
+  consents         Consent[]
+  distributions    Distribution[]
+  dedupRecords     CrossOrgDedupRecord[]
+
+  @@unique([organizationId, code])
+  @@unique([organizationId, cinHash])
+  @@index([organizationId])
+  @@index([organizationId, status])
+  @@index([organizationId, fullNameHash])
+  @@index([organizationId, region])
+  @@map("beneficiary")
+}
+
+model Spouse {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId String    @unique @db.Uuid
+  firstNameEnc  Bytes
+  lastNameEnc   Bytes
+  fullNameHash  Bytes
+  gender        Gender
+  dateOfBirth   DateTime? @db.Date
+  cinEnc        Bytes
+  cinHash       Bytes
+  phoneEnc      Bytes?
+  hasJob        Boolean   @default(false)
+  notesEnc      Bytes?
+  createdAt     DateTime  @default(now()) @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @db.Timestamptz
+  deletedAt     DateTime? @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  jobs        Job[]
+
+  @@index([cinHash])
+  @@map("spouse")
+}
+
+model Child {
+  id                   String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId        String      @db.Uuid
+  firstNameEnc         Bytes
+  lastNameEnc          Bytes
+  fullNameHash         Bytes
+  gender               Gender
+  dateOfBirth          DateTime    @db.Date
+  inSchool             Boolean     @default(false)
+  schoolLevel          SchoolLevel @default(none)
+  schoolLevelUpdatedAt DateTime?   @db.Date
+  schoolName           String?
+  works                Boolean     @default(false)
+  jobDescriptionEnc    Bytes? // required if works=true
+  hasDisability        Boolean     @default(false)
+  disabilityNotesEnc   Bytes?
+  notesEnc             Bytes?
+  createdAt            DateTime    @default(now()) @db.Timestamptz
+  updatedAt            DateTime    @updatedAt @db.Timestamptz
+  deletedAt            DateTime?   @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@map("child")
+}
+
+// Polymorphic owner: beneficiary or spouse.
+// Application-level invariant: exactly one of (beneficiaryId, spouseId) is set,
+// matching subjectType. Enforced via CHECK constraint in a SQL migration.
+model Job {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subjectType    JobSubjectType
+  beneficiaryId  String?        @db.Uuid
+  spouseId       String?        @db.Uuid
+  titleEnc       Bytes // [PII-HIGH]
+  employerEnc    Bytes? // [PII-HIGH]
+  placeEnc       Bytes? // [PII-HIGH]
+  schedule       String? // free-text e.g. "8h-17h, Mon-Fri"
+  salaryMinorEnc Bytes? // [PII-HIGH]
+  currency       String         @default("TND") @db.Char(3)
+  isRegistered   Boolean        @default(false) // declared with social security
+  startDate      DateTime?      @db.Date
+  endDate        DateTime?      @db.Date
+  notesEnc       Bytes?
+  createdAt      DateTime       @default(now()) @db.Timestamptz
+  updatedAt      DateTime       @updatedAt @db.Timestamptz
+  deletedAt      DateTime?      @db.Timestamptz
+
+  beneficiary Beneficiary? @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  spouse      Spouse?      @relation(fields: [spouseId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@index([spouseId])
+  @@index([subjectType])
+  @@map("job")
+}
+
+model Housing {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId   String           @db.Uuid
+  tenure          HousingTenure
+  rentMinorEnc    Bytes? // [PII-HIGH] when rented
+  currency        String           @default("TND") @db.Char(3)
+  ownerNameEnc    Bytes? // [PII-HIGH] when rented
+  ownerPhoneEnc   Bytes? // [PII-HIGH] when rented
+  condition       HousingCondition @default(fair)
+  rooms           Int?
+  occupants       Int?
+  hasElectricity  Boolean          @default(true)
+  hasRunningWater Boolean          @default(true)
+  addressEnc      Bytes?
+  notesEnc        Bytes?
+  createdAt       DateTime         @default(now()) @db.Timestamptz
+  updatedAt       DateTime         @updatedAt @db.Timestamptz
+  deletedAt       DateTime?        @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@map("housing")
+}
+
+model Disease {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId       String        @db.Uuid
+  // Either pick from a controlled list (name) or store free text encrypted (nameEnc).
+  name                String? // controlled name (PII-LOW)
+  nameEnc             Bytes? // [PII-HIGH] free-text alternative
+  diagnosisDate       DateTime?     @db.Date
+  monthlyCostMinorEnc Bytes? // [PII-HIGH]
+  currency            String        @default("TND") @db.Char(3)
+  status              DiseaseStatus @default(active)
+  needsMedication     Boolean       @default(false)
+  needsMonitoring     Boolean       @default(false)
+  notesEnc            Bytes?
+  createdAt           DateTime      @default(now()) @db.Timestamptz
+  updatedAt           DateTime      @updatedAt @db.Timestamptz
+  deletedAt           DateTime?     @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@map("disease")
+}
+
+model SeriousIllness {
+  id                  String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId       String          @db.Uuid
+  name                String?
+  nameEnc             Bytes?
+  diagnosisDate       DateTime?       @db.Date
+  totalCostMinorEnc   Bytes? // [PII-HIGH]
+  monthlyCostMinorEnc Bytes? // [PII-HIGH]
+  currency            String          @default("TND") @db.Char(3)
+  treatmentStatus     TreatmentStatus @default(pending)
+  hospital            String? // [PII-MED]
+  notesEnc            Bytes?
+  createdAt           DateTime        @default(now()) @db.Timestamptz
+  updatedAt           DateTime        @updatedAt @db.Timestamptz
+  deletedAt           DateTime?       @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@map("serious_illness")
+}
+
+model SocialCoverage {
+  id                    String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId         String             @db.Uuid
+  type                  SocialCoverageType
+  identifierEnc         Bytes? // [PII-HIGH]
+  monthlyAmountMinorEnc Bytes? // [PII-HIGH] nullable, e.g. monthly grant
+  currency              String             @default("TND") @db.Char(3)
+  validFrom             DateTime?          @db.Date
+  validUntil            DateTime?          @db.Date
+  notesEnc              Bytes?
+  createdAt             DateTime           @default(now()) @db.Timestamptz
+  updatedAt             DateTime           @updatedAt @db.Timestamptz
+  deletedAt             DateTime?          @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@index([beneficiaryId])
+  @@index([beneficiaryId, type])
+  @@map("social_coverage")
+}
+
+model BeneficiaryPhoto {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId     String          @db.Uuid
+  fileId            String          @db.Uuid // original (encrypted)
+  watermarkedFileId String?         @db.Uuid // shown to donors
+  thumbnailFileId   String?         @db.Uuid
+  visibility        PhotoVisibility @default(internal)
+  consentId         String?         @db.Uuid
+  caption           String?
+  takenAt           DateTime?       @db.Timestamptz
+  createdAt         DateTime        @default(now()) @db.Timestamptz
+  deletedAt         DateTime?       @db.Timestamptz
+
+  beneficiary     Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  file            StoredFile  @relation("PhotoFile", fields: [fileId], references: [id], onDelete: Restrict)
+  watermarkedFile StoredFile? @relation("PhotoWatermarked", fields: [watermarkedFileId], references: [id], onDelete: SetNull)
+  thumbnailFile   StoredFile? @relation("PhotoThumb", fields: [thumbnailFileId], references: [id], onDelete: SetNull)
+  consent         Consent?    @relation(fields: [consentId], references: [id], onDelete: SetNull)
+
+  @@index([beneficiaryId])
+  @@index([visibility])
+  @@map("beneficiary_photo")
+}
+
+model Case {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  beneficiaryId  String    @db.Uuid
+  departmentId   String    @db.Uuid
+  state          CaseState @default(submitted)
+  reason         String? // textual reason for the case
+  openedById     String?   @db.Uuid
+  reviewedById   String?   @db.Uuid
+  approvedById   String?   @db.Uuid
+  closedAt       DateTime? @db.Timestamptz
+  rejectedReason String?
+  validUntil     DateTime? @db.Date // when next re-verification is due
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @db.Timestamptz
+  deletedAt      DateTime? @db.Timestamptz
+
+  beneficiary Beneficiary  @relation(fields: [beneficiaryId], references: [id], onDelete: Restrict)
+  department  Department   @relation(fields: [departmentId], references: [id], onDelete: Restrict)
+  reviews     CaseReview[]
+  needScore   NeedScore?
+
+  @@index([organizationId])
+  @@index([beneficiaryId])
+  @@index([departmentId])
+  @@index([organizationId, state])
+  @@index([validUntil])
+  @@map("case")
+}
+
+model CaseReview {
+  id                    String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  caseId                String         @db.Uuid
+  reviewerId            String         @db.Uuid
+  decision              ReviewDecision @default(pending)
+  commentEnc            Bytes? // [PII-HIGH] reviewer notes may contain PP details
+  attachmentDocumentIds String[]       @db.Uuid // optional supporting docs
+  createdAt             DateTime       @default(now()) @db.Timestamptz
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([caseId])
+  @@index([reviewerId])
+  @@map("case_review")
+}
+
+model NeedScore {
+  caseId           String   @id @db.Uuid
+  score            Decimal  @db.Decimal(5, 2)
+  breakdown        Json
+  algorithmVersion String
+  computedAt       DateTime @default(now()) @db.Timestamptz
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  @@index([score])
+  @@map("need_score")
+}
+
+model ConsentVersion {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String         @db.Uuid
+  purpose        ConsentPurpose
+  version        String
+  bodyHtml       String // localized text(s) stored as JSON-in-html if needed; or per-locale rows
+  locale         String         @default("ar") @db.VarChar(8)
+  effectiveFrom  DateTime       @db.Timestamptz
+  effectiveTo    DateTime?      @db.Timestamptz
+  createdAt      DateTime       @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  consents     Consent[]
+
+  @@unique([organizationId, purpose, version, locale])
+  @@index([organizationId, purpose])
+  @@map("consent_version")
+}
+
+model Consent {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String         @db.Uuid
+  beneficiaryId    String?        @db.Uuid // for PP-side consents
+  donorUserId      String?        @db.Uuid // for donor-side consents
+  purpose          ConsentPurpose
+  granted          Boolean
+  consentVersionId String?        @db.Uuid
+  signedDocumentId String?        @db.Uuid // scanned signed paper
+  grantedAt        DateTime       @default(now()) @db.Timestamptz
+  revokedAt        DateTime?      @db.Timestamptz
+  revokedReason    String?
+  ipAddress        String?        @db.Inet
+  userAgent        String?
+  notes            String?
+
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  beneficiary    Beneficiary?       @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  consentVersion ConsentVersion?    @relation(fields: [consentVersionId], references: [id], onDelete: SetNull)
+  signedDocument Document?          @relation("ConsentSignedDoc", fields: [signedDocumentId], references: [id], onDelete: SetNull)
+  photos         BeneficiaryPhoto[]
+
+  @@index([organizationId])
+  @@index([beneficiaryId])
+  @@index([beneficiaryId, purpose])
+  @@map("consent")
+}
+
+// =====================================================================
+// DONORS, DONATIONS, PAYMENTS
+// =====================================================================
+
+model Donor {
+  id                 String                @id @db.Uuid // = User.id (1:1)
+  organizationId     String                @db.Uuid
+  displayPseudo      String? // shown publicly when donor wants anonymity
+  acceptsTaxReceipt  Boolean               @default(false)
+  fiscalId           String? // for tax receipts (matricule fiscal or CIN)
+  revealToPp         Boolean               @default(false)
+  visibility         DonorVisibility       @default(when_paid_out)
+  totalLifetimeMinor BigInt                @default(0)
+  totalLifetimeCcy   String                @default("TND") @db.Char(3)
+  preferredChannels  NotificationChannel[]
+  notesEnc           Bytes?
+  createdAt          DateTime              @default(now()) @db.Timestamptz
+  updatedAt          DateTime              @updatedAt @db.Timestamptz
+  deletedAt          DateTime?             @db.Timestamptz
+
+  user         User                @relation(fields: [id], references: [id], onDelete: Cascade)
+  organization Organization        @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  donations    Donation[]
+  pledges      Pledge[]
+  recurring    RecurringDonation[]
+
+  @@unique([organizationId, displayPseudo])
+  @@index([organizationId])
+  @@map("donor")
+}
+
+model Donation {
+  id                    String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId        String       @db.Uuid
+  donorId               String?      @db.Uuid // null = anonymous cash
+  campaignId            String?      @db.Uuid
+  occasionId            String?      @db.Uuid
+  pledgeId              String?      @db.Uuid // when fulfilling a pledge
+  recurringId           String?      @db.Uuid // when scheduled
+  kind                  DonationKind
+  amountMinor           BigInt
+  currency              String       @default("TND") @db.Char(3)
+  receivedAt            DateTime     @default(now()) @db.Timestamptz
+  receivedById          String?      @db.Uuid // staff cashier
+  // In-kind donation
+  inKindItemId          String?      @db.Uuid
+  inKindLotId           String?      @db.Uuid
+  inKindQuantity        Decimal?     @db.Decimal(14, 3)
+  inKindUnit            String?
+  inKindEstValueMinor   BigInt? // estimated value for reporting
+  // Anonymity flag (for cash donations without an account)
+  isAnonymous           Boolean      @default(false)
+  donorNameSnapshot     String? // captured at receipt time for receipts when no account
+  donorFiscalIdSnapshot String?
+  /// Optional spending preference set by the donor.
+  /// When set, the donation should be allocated to a distribution of that
+  /// inventory category (e.g. "food"). Mutually exclusive with campaignId.
+  spendCategory         String?
+  notesEnc              Bytes?
+  // Soft cancel
+  cancelledAt           DateTime?    @db.Timestamptz
+  cancelledReason       String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  donor        Donor?               @relation(fields: [donorId], references: [id], onDelete: SetNull)
+  campaign     Campaign?            @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  occasion     Occasion?            @relation(fields: [occasionId], references: [id], onDelete: SetNull)
+  pledge       Pledge?              @relation(fields: [pledgeId], references: [id], onDelete: SetNull)
+  recurring    RecurringDonation?   @relation(fields: [recurringId], references: [id], onDelete: SetNull)
+  inKindItem   InventoryItem?       @relation(fields: [inKindItemId], references: [id], onDelete: SetNull)
+  inKindLot    StockLot?            @relation(fields: [inKindLotId], references: [id], onDelete: SetNull)
+  payments     Payment[]
+  allocations  DonationAllocation[]
+  bills        Bill[]               @relation("BillForDonation")
+
+  @@index([organizationId])
+  @@index([organizationId, receivedAt])
+  @@index([donorId])
+  @@index([campaignId])
+  @@index([occasionId])
+  @@index([pledgeId])
+  @@index([kind])
+  @@map("donation")
+}
+
+model DonationAllocation {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  donationId     String   @db.Uuid
+  distributionId String?  @db.Uuid // null = retained in treasury
+  campaignId     String?  @db.Uuid
+  amountMinor    BigInt
+  currency       String   @default("TND") @db.Char(3)
+  notes          String?
+  createdAt      DateTime @default(now()) @db.Timestamptz
+
+  donation     Donation      @relation(fields: [donationId], references: [id], onDelete: Cascade)
+  distribution Distribution? @relation(fields: [distributionId], references: [id], onDelete: SetNull)
+  campaign     Campaign?     @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+
+  @@index([donationId])
+  @@index([distributionId])
+  @@index([campaignId])
+  @@map("donation_allocation")
+}
+
+model Pledge {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId    String      @db.Uuid
+  donorId           String      @db.Uuid
+  campaignId        String?     @db.Uuid
+  amountMinor       BigInt
+  currency          String      @default("TND") @db.Char(3)
+  paidMinor         BigInt      @default(0)
+  dueDate           DateTime    @db.Date
+  state             PledgeState @default(open)
+  remindersCount    Int         @default(0)
+  lastReminderAt    DateTime?   @db.Timestamptz
+  responsibleUserId String?     @db.Uuid
+  notesEnc          Bytes?
+  cancelledAt       DateTime?   @db.Timestamptz
+  cancelledReason   String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization Organization     @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  donor        Donor            @relation(fields: [donorId], references: [id], onDelete: Restrict)
+  campaign     Campaign?        @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  donations    Donation[]
+  reminders    PledgeReminder[]
+
+  @@index([organizationId])
+  @@index([donorId])
+  @@index([state])
+  @@index([dueDate])
+  @@map("pledge")
+}
+
+model PledgeReminder {
+  id           String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pledgeId     String                @db.Uuid
+  channel      PledgeReminderChannel
+  sentAt       DateTime              @default(now()) @db.Timestamptz
+  sentById     String?               @db.Uuid // staff who triggered or recorded the reminder
+  donorReached Boolean               @default(false)
+  notes        String?
+
+  pledge Pledge @relation(fields: [pledgeId], references: [id], onDelete: Cascade)
+
+  @@index([pledgeId])
+  @@map("pledge_reminder")
+}
+
+model RecurringDonation {
+  id                    String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId        String            @db.Uuid
+  donorId               String            @db.Uuid
+  amountMinor           BigInt
+  currency              String            @default("TND") @db.Char(3)
+  interval              RecurringInterval
+  nextRunAt             DateTime          @db.Timestamptz
+  active                Boolean           @default(true)
+  gatewaySubscriptionId String?
+  startedAt             DateTime          @default(now()) @db.Timestamptz
+  cancelledAt           DateTime?         @db.Timestamptz
+  cancelledReason       String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  donor        Donor        @relation(fields: [donorId], references: [id], onDelete: Restrict)
+  donations    Donation[]
+
+  @@index([organizationId])
+  @@index([donorId])
+  @@index([nextRunAt])
+  @@map("recurring_donation")
+}
+
+model Payment {
+  id                  String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  donationId          String          @db.Uuid
+  provider            PaymentProvider
+  providerRef         String? // gateway transaction id
+  amountMinor         BigInt
+  currency            String          @default("TND") @db.Char(3)
+  status              PaymentStatus   @default(initiated)
+  idempotencyKey      String          @unique
+  initiatedAt         DateTime        @default(now()) @db.Timestamptz
+  completedAt         DateTime?       @db.Timestamptz
+  failedReason        String?
+  refundedAmountMinor BigInt          @default(0)
+  rawPayloadRedacted  Json? // PAN/CVV stripped before storage
+  // Cash-specific helpful fields
+  cashReceiptNumber   String?
+  cashReceivedById    String?         @db.Uuid
+
+  createdAt DateTime @default(now()) @db.Timestamptz
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  donation Donation              @relation(fields: [donationId], references: [id], onDelete: Restrict)
+  webhooks PaymentWebhookEvent[]
+
+  @@index([donationId])
+  @@index([provider])
+  @@index([status])
+  @@index([providerRef])
+  @@map("payment")
+}
+
+model PaymentProviderConfig {
+  id               String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String          @db.Uuid
+  provider         PaymentProvider
+  isActive         Boolean         @default(true)
+  publicKeyEnc     Bytes? // some providers expose a public key
+  secretKeyEnc     Bytes // [PII-HIGH-equivalent] gateway secret
+  webhookSecretEnc Bytes
+  apiBaseUrl       String?
+  notes            String?
+  createdAt        DateTime        @default(now()) @db.Timestamptz
+  updatedAt        DateTime        @updatedAt @db.Timestamptz
+  deletedAt        DateTime?       @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, provider])
+  @@index([organizationId])
+  @@map("payment_provider_config")
+}
+
+model PaymentWebhookEvent {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  paymentId       String?         @db.Uuid // nullable until matched
+  organizationId  String?         @db.Uuid
+  provider        PaymentProvider
+  externalEventId String?
+  signatureValid  Boolean
+  receivedAt      DateTime        @default(now()) @db.Timestamptz
+  payloadRedacted Json
+  ipAddress       String?         @db.Inet
+  processedAt     DateTime?       @db.Timestamptz
+  processedError  String?
+
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([paymentId])
+  @@index([provider, externalEventId])
+  @@index([receivedAt])
+  @@map("payment_webhook_event")
+}
+
+// =====================================================================
+// DISTRIBUTIONS, INVENTORY, CAMPAIGNS, OCCASIONS
+// =====================================================================
+
+model InventoryItem {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String    @db.Uuid
+  name            String
+  /// Free-text category label so each organization can use its own taxonomy
+  /// (e.g. "food", "school_supplies", "couscous-packs", ...).
+  category        String
+  unit            String // kg, box, piece, liter
+  /// Optional default pack/quantity for distributions (e.g. 3 blankets per pack).
+  defaultQuantity Decimal?  @db.Decimal(14, 3)
+  trackExpiry     Boolean   @default(false)
+  minStock        Decimal?  @db.Decimal(14, 3)
+  notes           String?
+  createdAt       DateTime  @default(now()) @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @db.Timestamptz
+  deletedAt       DateTime? @db.Timestamptz
+
+  organization      Organization       @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  lots              StockLot[]
+  distributionLines DistributionLine[]
+  donations         Donation[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([organizationId, category])
+  @@map("inventory_item")
+}
+
+model StockLot {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  itemId             String    @db.Uuid
+  receivedAt         DateTime  @default(now()) @db.Timestamptz
+  expiresOn          DateTime? @db.Date
+  quantityInitial    Decimal   @db.Decimal(14, 3)
+  quantityRemaining  Decimal   @db.Decimal(14, 3)
+  sourceDonationId   String?   @db.Uuid
+  supplierName       String?
+  supplierInvoiceRef String?
+  unitCostMinor      BigInt? // valuation
+  currency           String    @default("TND") @db.Char(3)
+  storageLocation    String?
+  notes              String?
+  createdAt          DateTime  @default(now()) @db.Timestamptz
+  updatedAt          DateTime  @updatedAt @db.Timestamptz
+  deletedAt          DateTime? @db.Timestamptz
+
+  item              InventoryItem      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  movements         StockMovement[]
+  distributionLines DistributionLine[]
+  donations         Donation[]
+
+  @@index([itemId])
+  @@index([expiresOn])
+  @@map("stock_lot")
+}
+
+model StockMovement {
+  id                 String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  lotId              String            @db.Uuid
+  type               StockMovementType
+  quantity           Decimal           @db.Decimal(14, 3)
+  reason             String?
+  distributionLineId String?           @unique @db.Uuid
+  performedById      String?           @db.Uuid
+  performedAt        DateTime          @default(now()) @db.Timestamptz
+
+  lot              StockLot          @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  distributionLine DistributionLine? @relation(fields: [distributionLineId], references: [id], onDelete: SetNull)
+
+  @@index([lotId])
+  @@index([performedAt])
+  @@map("stock_movement")
+}
+
+model Distribution {
+  id              String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String             @db.Uuid
+  beneficiaryId   String             @db.Uuid
+  campaignId      String?            @db.Uuid
+  occasionId      String?            @db.Uuid
+  kind            DistributionKind
+  status          DistributionStatus @default(planned)
+  plannedAt       DateTime?          @db.Timestamptz
+  deliveredAt     DateTime?          @db.Timestamptz
+  deliveredById   String?            @db.Uuid
+  signatureFileId String?            @db.Uuid // PP's signature on receipt
+  notesEnc        Bytes?
+  cancelledAt     DateTime?          @db.Timestamptz
+  cancelledReason String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  beneficiary   Beneficiary          @relation(fields: [beneficiaryId], references: [id], onDelete: Restrict)
+  campaign      Campaign?            @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  occasion      Occasion?            @relation(fields: [occasionId], references: [id], onDelete: SetNull)
+  signatureFile StoredFile?          @relation("DistributionSignature", fields: [signatureFileId], references: [id], onDelete: SetNull)
+  lines         DistributionLine[]
+  allocations   DonationAllocation[]
+  bills         Bill[]               @relation("BillForDistribution")
+
+  @@index([organizationId])
+  @@index([beneficiaryId])
+  @@index([campaignId])
+  @@index([occasionId])
+  @@index([status])
+  @@index([deliveredAt])
+  @@map("distribution")
+}
+
+model DistributionLine {
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  distributionId String               @db.Uuid
+  lineKind       DistributionLineKind
+  itemId         String?              @db.Uuid
+  lotId          String?              @db.Uuid
+  quantity       Decimal?             @db.Decimal(14, 3)
+  unit           String?
+  amountMinor    BigInt? // when lineKind=cash
+  currency       String               @default("TND") @db.Char(3)
+  valuationMinor BigInt? // computed for items, used in reporting
+  notes          String?
+
+  distribution Distribution   @relation(fields: [distributionId], references: [id], onDelete: Cascade)
+  item         InventoryItem? @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  lot          StockLot?      @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  movement     StockMovement?
+
+  @@index([distributionId])
+  @@index([itemId])
+  @@index([lotId])
+  @@map("distribution_line")
+}
+
+model Campaign {
+  id                     String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId         String        @db.Uuid
+  name                   String
+  description            String?
+  occasionId             String?       @db.Uuid
+  startsAt               DateTime      @db.Date
+  endsAt                 DateTime      @db.Date
+  targetAmountMinor      BigInt?
+  collectedAmountMinor   BigInt        @default(0)
+  distributedAmountMinor BigInt        @default(0)
+  currency               String        @default("TND") @db.Char(3)
+  state                  CampaignState @default(draft)
+  visibleOnPublicPage    Boolean       @default(true)
+  coverFileId            String?       @db.Uuid
+  createdAt              DateTime      @default(now()) @db.Timestamptz
+  updatedAt              DateTime      @updatedAt @db.Timestamptz
+  deletedAt              DateTime?     @db.Timestamptz
+
+  organization  Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  occasion      Occasion?            @relation(fields: [occasionId], references: [id], onDelete: SetNull)
+  donations     Donation[]
+  pledges       Pledge[]
+  distributions Distribution[]
+  allocations   DonationAllocation[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@index([state])
+  @@index([startsAt, endsAt])
+  @@map("campaign")
+}
+
+model Occasion {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  name           String // Ramadan, Eid al-Fitr, Eid al-Adha, back-to-school, ...
+  description    String?
+  // Period (Hijri displayed in UI; storage is Gregorian)
+  periodStart    DateTime  @db.Date
+  periodEnd      DateTime  @db.Date
+  recurring      Boolean   @default(false)
+  recurringRule  String? // optional RRULE
+  isHijriBased   Boolean   @default(false) // hint for the UI calendar conversion
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @db.Timestamptz
+  deletedAt      DateTime? @db.Timestamptz
+
+  organization  Organization   @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  campaigns     Campaign[]
+  donations     Donation[]
+  distributions Distribution[]
+
+  @@unique([organizationId, name, periodStart])
+  @@index([organizationId])
+  @@map("occasion")
+}
+
+// =====================================================================
+// EXPENSES, BILLS, LEDGER
+// =====================================================================
+
+model ExpenseCategory {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  name           String // e.g. water, electricity, rent, paper, internet
+  isUtility      Boolean   @default(false)
+  parentId       String?   @db.Uuid
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @db.Timestamptz
+  deletedAt      DateTime? @db.Timestamptz
+
+  organization Organization      @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parent       ExpenseCategory?  @relation("ExpenseCategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children     ExpenseCategory[] @relation("ExpenseCategoryTree")
+  expenses     Expense[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+  @@map("expense_category")
+}
+
+model Expense {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  categoryId     String   @db.Uuid
+  amountMinor    BigInt
+  currency       String   @default("TND") @db.Char(3)
+  spentAt        DateTime @db.Date
+  supplier       String?
+  reference      String? // supplier invoice number
+  paidById       String?  @db.Uuid
+  documentId     String?  @db.Uuid
+  notes          String?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  category     ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  document     Document?       @relation("ExpenseDoc", fields: [documentId], references: [id], onDelete: SetNull)
+  bills        Bill[]          @relation("BillForExpense")
+
+  @@index([organizationId])
+  @@index([organizationId, spentAt])
+  @@index([categoryId])
+  @@map("expense")
+}
+
+model BillTemplate {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String    @db.Uuid
+  name           String
+  htmlContent    String
+  cssContent     String?
+  primaryColor   String?
+  logoFileId     String?   @db.Uuid
+  series         String    @default("RECEIPT")
+  version        Int       @default(1)
+  isDefault      Boolean   @default(false)
+  createdById    String?   @db.Uuid
+  createdAt      DateTime  @default(now()) @db.Timestamptz
+  updatedAt      DateTime  @updatedAt @db.Timestamptz
+  deletedAt      DateTime? @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  bills        Bill[]
+
+  @@unique([organizationId, name, version])
+  @@index([organizationId])
+  @@map("bill_template")
+}
+
+// One counter per (organization, series, year) to produce gap-free numbers.
+model BillNumberCounter {
+  organizationId String @db.Uuid
+  series         String
+  year           Int
+  lastValue      Int    @default(0)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@id([organizationId, series, year])
+  @@map("bill_number_counter")
+}
+
+model Bill {
+  id                           String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId               String            @db.Uuid
+  templateId                   String?           @db.Uuid
+  number                       String // e.g. RECEIPT-2026-0001234
+  series                       String            @default("RECEIPT")
+  yearIssued                   Int
+  recipientType                BillRecipientType
+  recipientId                  String?           @db.Uuid
+  recipientSnapshot            Json // name, address, fiscal id captured at issue time
+  issuedAt                     DateTime          @default(now()) @db.Timestamptz
+  issuedById                   String?           @db.Uuid
+  totalMinor                   BigInt
+  currency                     String            @default("TND") @db.Char(3)
+  pdfFileId                    String?           @db.Uuid
+  signatureFileId              String?           @db.Uuid
+  status                       BillStatus        @default(issued)
+  cancellationReason           String?
+  cancelledAt                  DateTime?         @db.Timestamptz
+  // Optional links to source records
+  linkedDonationId             String?           @db.Uuid
+  linkedDistributionId         String?           @db.Uuid
+  linkedExpenseId              String?           @db.Uuid
+  // Tunisia tax receipt fields
+  isTaxReceipt                 Boolean           @default(false)
+  organizationFiscalIdSnapshot String?
+  legalMentions                String? // localized legal text snapshot
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization       Organization  @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  template           BillTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  pdfFile            StoredFile?   @relation("BillPdf", fields: [pdfFileId], references: [id], onDelete: SetNull)
+  signatureFile      StoredFile?   @relation("BillSignature", fields: [signatureFileId], references: [id], onDelete: SetNull)
+  lines              BillLine[]
+  linkedDonation     Donation?     @relation("BillForDonation", fields: [linkedDonationId], references: [id], onDelete: SetNull)
+  linkedDistribution Distribution? @relation("BillForDistribution", fields: [linkedDistributionId], references: [id], onDelete: SetNull)
+  linkedExpense      Expense?      @relation("BillForExpense", fields: [linkedExpenseId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, series, number])
+  @@index([organizationId])
+  @@index([organizationId, issuedAt])
+  @@index([recipientType, recipientId])
+  @@index([linkedDonationId])
+  @@index([linkedDistributionId])
+  @@index([linkedExpenseId])
+  @@map("bill")
+}
+
+model BillLine {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  billId         String   @db.Uuid
+  position       Int      @default(0)
+  label          String
+  quantity       Decimal  @db.Decimal(14, 3)
+  unitPriceMinor BigInt
+  amountMinor    BigInt
+  taxRate        Decimal? @db.Decimal(5, 2)
+  taxAmountMinor BigInt?
+
+  bill Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
+
+  @@index([billId])
+  @@map("bill_line")
+}
+
+// Minimal double-entry accounting ledger.
+model LedgerEntry {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String              @db.Uuid
+  postedAt       DateTime            @default(now()) @db.Timestamptz
+  description    String
+  referenceType  LedgerReferenceType
+  referenceId    String              @db.Uuid
+  debitAccount   String
+  creditAccount  String
+  amountMinor    BigInt
+  currency       String              @default("TND") @db.Char(3)
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([organizationId, postedAt])
+  @@index([referenceType, referenceId])
+  @@map("ledger_entry")
+}
+
+// =====================================================================
+// FILES, DOCUMENTS, PHOTOS
+// =====================================================================
+
+model StoredFile {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId  String          @db.Uuid
+  bucket          String
+  key             String // org/<id>/...
+  mime            String
+  size            BigInt
+  sha256          Bytes
+  uploadedById    String?         @db.Uuid
+  virusScanStatus VirusScanStatus @default(pending)
+  virusScanResult String?
+  virusScannedAt  DateTime?       @db.Timestamptz
+  // Encryption
+  isEncrypted     Boolean         @default(true)
+  kmsKeyId        String?
+  iv              Bytes?
+  tag             Bytes?
+  // Image specifics
+  width           Int?
+  height          Int?
+  hasExif         Boolean         @default(false)
+  isWatermarked   Boolean         @default(false)
+  isThumbnail     Boolean         @default(false)
+  parentFileId    String?         @db.Uuid
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization           Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  uploadedBy             User?              @relation("FileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  parentFile             StoredFile?        @relation("FileVariants", fields: [parentFileId], references: [id], onDelete: SetNull)
+  variants               StoredFile[]       @relation("FileVariants")
+  documents              Document[]
+  photoOriginals         BeneficiaryPhoto[] @relation("PhotoFile")
+  photoWatermarks        BeneficiaryPhoto[] @relation("PhotoWatermarked")
+  photoThumbs            BeneficiaryPhoto[] @relation("PhotoThumb")
+  distributionSignatures Distribution[]     @relation("DistributionSignature")
+  billPdfs               Bill[]             @relation("BillPdf")
+  billSignatures         Bill[]             @relation("BillSignature")
+
+  @@unique([bucket, key])
+  @@index([organizationId])
+  @@index([virusScanStatus])
+  @@map("stored_file")
+}
+
+// Polymorphic owner: ownerType + ownerId, no FK constraint.
+// Application-level integrity is verified via guard logic; the audit log
+// captures any orphaned writes for forensic review.
+model Document {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String            @db.Uuid
+  ownerType      DocumentOwnerType
+  ownerId        String            @db.Uuid
+  category       DocumentCategory
+  fileId         String            @db.Uuid
+  issuedOn       DateTime?         @db.Date
+  expiresOn      DateTime?         @db.Date
+  verifiedById   String?           @db.Uuid
+  verifiedAt     DateTime?         @db.Timestamptz
+  notesEnc       Bytes?
+
+  createdAt DateTime  @default(now()) @db.Timestamptz
+  updatedAt DateTime  @updatedAt @db.Timestamptz
+  deletedAt DateTime? @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  file         StoredFile   @relation(fields: [fileId], references: [id], onDelete: Restrict)
+  consents     Consent[]    @relation("ConsentSignedDoc")
+  expenses     Expense[]    @relation("ExpenseDoc")
+
+  @@index([organizationId])
+  @@index([ownerType, ownerId])
+  @@index([organizationId, category])
+  @@index([expiresOn])
+  @@map("document")
+}
+
+// =====================================================================
+// AUDIT, NOTIFICATIONS, VOLUNTEER, DEDUP
+// =====================================================================
+
+model AuditLog {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String?      @db.Uuid
+  actorUserId    String?      @db.Uuid
+  actorIp        String?      @db.Inet
+  actorUserAgent String?
+  action         String // e.g. beneficiary.read.full
+  resourceType   String?
+  resourceId     String?      @db.Uuid
+  outcome        AuditOutcome @default(allow)
+  reason         String? // typed by user for sensitive actions
+  before         Json?
+  after          Json?
+  metadata       Json?
+  at             DateTime     @default(now()) @db.Timestamptz
+  prevHash       Bytes?
+  thisHash       Bytes? // sha256(prevHash || canonical_json(row))
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  actor        User?         @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([organizationId, at])
+  @@index([actorUserId])
+  @@index([action])
+  @@index([resourceType, resourceId])
+  @@map("audit_log")
+}
+
+model Notification {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String              @db.Uuid
+  userId         String              @db.Uuid
+  channel        NotificationChannel
+  topic          NotificationTopic
+  subject        String?
+  payload        Json
+  status         NotificationStatus  @default(pending)
+  scheduledAt    DateTime?           @db.Timestamptz
+  sentAt         DateTime?           @db.Timestamptz
+  readAt         DateTime?           @db.Timestamptz
+  failedReason   String?
+  attempts       Int                 @default(0)
+  externalRef    String? // e.g. SMS provider id
+  createdAt      DateTime            @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([userId, status])
+  @@index([topic])
+  @@index([scheduledAt])
+  @@map("notification")
+}
+
+model VolunteerShift {
+  id             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String              @db.Uuid
+  userId         String              @db.Uuid
+  departmentId   String?             @db.Uuid
+  startsAt       DateTime            @db.Timestamptz
+  endsAt         DateTime            @db.Timestamptz
+  location       String?
+  state          VolunteerShiftState @default(scheduled)
+  scopeOverride  Json? // extra permissions limited to this shift
+  checkInAt      DateTime?           @db.Timestamptz
+  checkOutAt     DateTime?           @db.Timestamptz
+  notes          String?
+  createdAt      DateTime            @default(now()) @db.Timestamptz
+  updatedAt      DateTime            @updatedAt @db.Timestamptz
+  deletedAt      DateTime?           @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   Department?  @relation(fields: [departmentId], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([userId])
+  @@index([state])
+  @@index([startsAt, endsAt])
+  @@map("volunteer_shift")
+}
+
+// Cross-organization deduplication record.
+// One row per (organization, beneficiary) that opted in.
+// The record is also pushed to a dedicated dedup microservice/database in
+// production; this table is the local mirror for the owning organization.
+model CrossOrgDedupRecord {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId       String    @db.Uuid
+  beneficiaryId        String    @db.Uuid
+  cinHash              Bytes // HMAC-SHA256(cin, network_pepper)
+  // Information that participating orgs are allowed to read (per consent)
+  monthlyAidMinor      BigInt    @default(0) // sum of monthly aid received here
+  currency             String    @default("TND") @db.Char(3)
+  aidActive            Boolean   @default(false)
+  consentId            String    @db.Uuid
+  consentShareAmountId String?   @db.Uuid // optional separate consent for amount sharing
+  validUntil           DateTime? @db.Date
+  lastSyncedAt         DateTime? @db.Timestamptz
+  createdAt            DateTime  @default(now()) @db.Timestamptz
+  updatedAt            DateTime  @updatedAt @db.Timestamptz
+  deletedAt            DateTime? @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, beneficiaryId])
+  @@index([cinHash])
+  @@index([organizationId])
+  @@map("cross_org_dedup_record")
+}
+
+/// Tunisia reference data (governorates & delegations / cities).
+model Governorate {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  delegations Delegation[]
+
+  @@map("governorate")
+}
+
+model Delegation {
+  id            Int         @id @default(autoincrement())
+  governorateId Int
+  name          String
+  governorate   Governorate @relation(fields: [governorateId], references: [id], onDelete: Cascade)
+
+  @@unique([governorateId, name])
+  @@index([governorateId])
+  @@map("delegation")
+}
