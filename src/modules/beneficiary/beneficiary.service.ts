@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException, ConflictException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EncryptionService } from '../../common/crypto/encryption.service';
@@ -13,6 +13,7 @@ import type {
   UpsertHousingDto,
   UpsertDiseaseDto,
   UpsertSocialCoverageDto,
+  UpsertDependentDto,
 } from './dto';
 
 @Injectable()
@@ -23,11 +24,12 @@ export class BeneficiaryService {
     private readonly hash: HashService,
   ) {}
 
-  async list(organizationId: string, query: ListBeneficiariesQuery) {
+  async list(organizationId: string, query: ListBeneficiariesQuery, scopeDepartmentId?: string) {
     const searchOr = query.q ? this.buildSearchOr(organizationId, query.q) : undefined;
     const where: Prisma.BeneficiaryWhereInput = {
       organizationId,
       deletedAt: null,
+      ...(scopeDepartmentId ? { primaryDepartmentId: scopeDepartmentId } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.region ? { region: { equals: query.region } } : {}),
       ...(searchOr ? { OR: searchOr } : {}),
@@ -57,7 +59,21 @@ export class BeneficiaryService {
     return { total, items, limit: query.limit, offset: query.offset };
   }
 
-  /** Search by beneficiary code, CIN, phone, or full name (exact hash match). */
+  async rebuildAllSearchIndexes(organizationId: string) {
+    const rows = await this.prisma.beneficiary.findMany({
+      where: { organizationId, deletedAt: null },
+      select: { id: true, firstNameEnc: true, lastNameEnc: true, phoneEnc: true },
+    });
+    for (const row of rows) {
+      const firstName = this.enc.decryptToString(row.firstNameEnc, organizationId, 'first_name');
+      const lastName = this.enc.decryptToString(row.lastNameEnc, organizationId, 'last_name');
+      const phone = row.phoneEnc ? this.enc.decryptToString(row.phoneEnc, organizationId, 'phone') : null;
+      await this.rebuildSearchIndex(organizationId, row.id, firstName, lastName, phone);
+    }
+    return { rebuilt: rows.length };
+  }
+
+  /** Search by code, CIN, name tokens (partial), phone prefix, or full name. */
   private buildSearchOr(organizationId: string, raw: string): Prisma.BeneficiaryWhereInput[] {
     const term = raw.trim();
     if (!term) return [];
@@ -73,22 +89,106 @@ export class BeneficiaryService {
     }
 
     const phoneDigits = term.replace(/\D/g, '');
-    if (phoneDigits.length >= 8) {
-      or.push({ phoneHash: this.hash.hash(phoneDigits, organizationId, 'phone') });
-      if (!phoneDigits.startsWith('216') && phoneDigits.length === 8) {
-        or.push({ phoneHash: this.hash.hash(`216${phoneDigits}`, organizationId, 'phone') });
+    if (phoneDigits.length >= 4) {
+      const variants = this.phoneVariants(phoneDigits);
+      for (const v of variants) {
+        for (let len = 4; len <= v.length; len++) {
+          const prefix = v.slice(0, len);
+          or.push({
+            searchIndexes: {
+              some: {
+                kind: 'phone_prefix',
+                tokenHash: this.hash.hash(prefix, organizationId, 'phone_prefix'),
+              },
+            },
+          });
+        }
+        if (v.length >= 8) {
+          or.push({ phoneHash: this.hash.hash(v, organizationId, 'phone') });
+        }
       }
     }
 
-    or.push({ fullNameHash: this.hash.hash(term, organizationId, 'full_name') });
-    const parts = term.split(/\s+/).filter(Boolean);
-    if (parts.length >= 2) {
+    const words = term.split(/\s+/).filter((w) => w.length >= 2);
+    for (const word of words) {
       or.push({
-        fullNameHash: this.hash.hash(`${parts[0]} ${parts.slice(1).join(' ')}`, organizationId, 'full_name'),
+        searchIndexes: {
+          some: {
+            kind: 'name_token',
+            tokenHash: this.hash.hash(word, organizationId, 'name_token'),
+          },
+        },
+      });
+    }
+
+    or.push({ fullNameHash: this.hash.hash(term, organizationId, 'full_name') });
+    if (words.length >= 2) {
+      or.push({
+        fullNameHash: this.hash.hash(words.join(' '), organizationId, 'full_name'),
       });
     }
 
     return or;
+  }
+
+  private phoneVariants(digits: string): string[] {
+    const out = new Set<string>();
+    if (!digits) return [];
+    out.add(digits);
+    if (digits.length === 8) out.add(`216${digits}`);
+    if (digits.startsWith('216') && digits.length > 3) out.add(digits.slice(3));
+    return [...out];
+  }
+
+  private nameTokens(firstName: string, lastName: string): string[] {
+    const tokens = new Set<string>();
+    const full = `${firstName} ${lastName}`.trim();
+    for (const w of full.split(/\s+/)) {
+      if (w.length >= 2) tokens.add(w);
+    }
+    return [...tokens];
+  }
+
+  private async rebuildSearchIndex(
+    organizationId: string,
+    beneficiaryId: string,
+    firstName: string,
+    lastName: string,
+    phone?: string | null,
+  ) {
+    await this.prisma.beneficiarySearchIndex.deleteMany({ where: { beneficiaryId } });
+    const rows: { organizationId: string; beneficiaryId: string; kind: 'name_token' | 'phone_prefix'; tokenHash: Buffer }[] =
+      [];
+
+    for (const token of this.nameTokens(firstName, lastName)) {
+      rows.push({
+        organizationId,
+        beneficiaryId,
+        kind: 'name_token',
+        tokenHash: this.hash.hash(token, organizationId, 'name_token'),
+      });
+    }
+
+    if (phone) {
+      for (const variant of this.phoneVariants(phone.replace(/\D/g, ''))) {
+        for (let len = 4; len <= variant.length; len++) {
+          const prefix = variant.slice(0, len);
+          rows.push({
+            organizationId,
+            beneficiaryId,
+            kind: 'phone_prefix',
+            tokenHash: this.hash.hash(prefix, organizationId, 'phone_prefix'),
+          });
+        }
+      }
+    }
+
+    if (rows.length > 0) {
+      await this.prisma.beneficiarySearchIndex.createMany({
+        data: rows,
+        skipDuplicates: true,
+      });
+    }
   }
 
   async create(organizationId: string, dto: CreateBeneficiaryDto): Promise<{ id: string; code: string }> {
@@ -104,7 +204,7 @@ export class BeneficiaryService {
       if (exists) throw new ConflictException('A beneficiary with this CIN already exists');
     }
 
-    return this.prisma.$transaction(async (tx) => {
+    const created = await this.prisma.$transaction(async (tx) => {
       const counter = await tx.beneficiaryCounter.upsert({
         where: { organizationId_year: { organizationId, year } },
         create: { organizationId, year, lastValue: 1 },
@@ -130,6 +230,7 @@ export class BeneficiaryService {
           region: dto.region,
           city: dto.city,
           publicAlias: dto.publicAlias,
+          primaryDepartmentId: dto.departmentId,
           status: 'draft',
         },
         select: { id: true, code: true },
@@ -147,6 +248,9 @@ export class BeneficiaryService {
       });
       return beneficiary;
     });
+
+    await this.rebuildSearchIndex(organizationId, created.id, dto.firstName, dto.lastName, dto.phone);
+    return created;
   }
 
   /**
@@ -259,6 +363,21 @@ export class BeneficiaryService {
     if (dto.photoConsent !== undefined) updates.photoConsent = dto.photoConsent;
 
     await this.prisma.beneficiary.update({ where: { id }, data: updates });
+
+    if (dto.firstName !== undefined || dto.lastName !== undefined || dto.phone !== undefined) {
+      const firstName =
+        dto.firstName ?? this.enc.decryptToString(existing.firstNameEnc, organizationId, 'first_name');
+      const lastName =
+        dto.lastName ?? this.enc.decryptToString(existing.lastNameEnc, organizationId, 'last_name');
+      const phone =
+        dto.phone !== undefined
+          ? dto.phone
+          : existing.phoneEnc
+            ? this.enc.decryptToString(existing.phoneEnc, organizationId, 'phone')
+            : null;
+      await this.rebuildSearchIndex(organizationId, id, firstName, lastName, phone);
+    }
+
     return { id, ok: true };
   }
 
@@ -644,6 +763,58 @@ export class BeneficiaryService {
     return { ok: true };
   }
 
+  // --- Dependents (persons under care) -------------------------------------
+  async listDependents(organizationId: string, beneficiaryId: string) {
+    await this.ensureOwned(organizationId, beneficiaryId);
+    const list = await this.prisma.dependentPerson.findMany({
+      where: { beneficiaryId, deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    return list.map((p) => ({
+      id: p.id,
+      relationType: p.relationType,
+      relationOther: p.relationOther,
+      firstName: this.enc.decryptToString(p.firstNameEnc, organizationId, 'first_name'),
+      lastName: this.enc.decryptToString(p.lastNameEnc, organizationId, 'last_name'),
+      gender: p.gender,
+      dateOfBirth: p.dateOfBirth,
+      cin: p.cinEnc ? this.enc.decryptToString(p.cinEnc, organizationId, 'cin') : null,
+      phone: p.phoneEnc ? this.enc.decryptToString(p.phoneEnc, organizationId, 'phone') : null,
+      notes: p.notesEnc ? this.enc.decryptToString(p.notesEnc, organizationId, 'notes') : null,
+    }));
+  }
+
+  async addDependent(organizationId: string, beneficiaryId: string, dto: UpsertDependentDto) {
+    await this.ensureOwned(organizationId, beneficiaryId);
+    const fullName = `${dto.firstName} ${dto.lastName}`;
+    return this.prisma.dependentPerson.create({
+      data: {
+        beneficiaryId,
+        relationType: dto.relationType,
+        relationOther: dto.relationType === 'other' ? dto.relationOther ?? null : null,
+        firstNameEnc: this.enc.encrypt(dto.firstName, organizationId, 'first_name'),
+        lastNameEnc: this.enc.encrypt(dto.lastName, organizationId, 'last_name'),
+        fullNameHash: this.hash.hash(fullName, organizationId, 'full_name'),
+        gender: dto.gender,
+        dateOfBirth: dto.dateOfBirth ? new Date(dto.dateOfBirth) : null,
+        cinEnc: dto.cin ? this.enc.encrypt(dto.cin, organizationId, 'cin') : null,
+        cinHash: dto.cin ? this.hash.hash(dto.cin, organizationId, 'cin') : null,
+        phoneEnc: dto.phone ? this.enc.encrypt(dto.phone, organizationId, 'phone') : null,
+        notesEnc: dto.notes ? this.enc.encrypt(dto.notes, organizationId, 'notes') : null,
+      },
+      select: { id: true },
+    });
+  }
+
+  async deleteDependent(organizationId: string, beneficiaryId: string, dependentId: string) {
+    await this.ensureOwned(organizationId, beneficiaryId);
+    await this.prisma.dependentPerson.updateMany({
+      where: { id: dependentId, beneficiaryId },
+      data: { deletedAt: new Date() },
+    });
+    return { ok: true };
+  }
+
   // --- Diseases ------------------------------------------------------------
   async listDiseases(organizationId: string, beneficiaryId: string) {
     await this.ensureOwned(organizationId, beneficiaryId);
@@ -653,6 +824,9 @@ export class BeneficiaryService {
     });
     return list.map((d) => ({
       id: d.id,
+      subjectType: d.subjectType,
+      childId: d.childId,
+      dependentPersonId: d.dependentPersonId,
       name: d.name,
       nameFree: d.nameEnc ? this.enc.decryptToString(d.nameEnc, organizationId, 'notes') : null,
       diagnosisDate: d.diagnosisDate,
@@ -669,10 +843,33 @@ export class BeneficiaryService {
 
   async addDisease(organizationId: string, beneficiaryId: string, dto: UpsertDiseaseDto) {
     await this.ensureOwned(organizationId, beneficiaryId);
+    const subjectType = dto.subjectType ?? 'beneficiary';
+    if (subjectType === 'spouse') {
+      const s = await this.prisma.spouse.findUnique({ where: { beneficiaryId }, select: { id: true } });
+      if (!s) throw new NotFoundException('Spouse must be created first');
+    }
+    if (subjectType === 'child') {
+      if (!dto.childId) throw new BadRequestException('childId is required for child subject');
+      const c = await this.prisma.child.findFirst({
+        where: { id: dto.childId, beneficiaryId, deletedAt: null },
+      });
+      if (!c) throw new NotFoundException('Child not found');
+    }
+    if (subjectType === 'dependent') {
+      if (!dto.dependentPersonId) throw new BadRequestException('dependentPersonId is required');
+      const p = await this.prisma.dependentPerson.findFirst({
+        where: { id: dto.dependentPersonId, beneficiaryId, deletedAt: null },
+      });
+      if (!p) throw new NotFoundException('Dependent person not found');
+    }
+
     const monthlyCostMinor = dto.monthlyCost != null ? Math.round(dto.monthlyCost * 1000) : null;
     return this.prisma.disease.create({
       data: {
         beneficiaryId,
+        subjectType,
+        childId: subjectType === 'child' ? dto.childId : null,
+        dependentPersonId: subjectType === 'dependent' ? dto.dependentPersonId : null,
         name: dto.name ?? null,
         nameEnc: dto.nameFree ? this.enc.encrypt(dto.nameFree, organizationId, 'notes') : null,
         diagnosisDate: dto.diagnosisDate ? new Date(dto.diagnosisDate) : null,

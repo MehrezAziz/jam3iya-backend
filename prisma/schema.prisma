@@ -431,8 +431,10 @@ model Organization {
   consentVersions     ConsentVersion[]
   billNumberCounters  BillNumberCounter[]
   beneficiaryCounters BeneficiaryCounter[]
-  userInvites         UserInvite[]
-  paymentProviders    PaymentProviderConfig[]
+  userInvites              UserInvite[]
+  paymentProviders         PaymentProviderConfig[]
+  beneficiaryAccessGrants  BeneficiaryAccessGrant[]
+  beneficiarySearchIndexes BeneficiarySearchIndex[]
 
   @@index([slug])
   @@index([status])
@@ -445,6 +447,8 @@ model Department {
   parentDepartmentId String?   @db.Uuid
   name               String
   description        String?
+  loginCode          String? // unique per org; used with org slug for department login
+  passwordHash       String?
   isMain             Boolean   @default(false)
   createdAt          DateTime  @default(now()) @db.Timestamptz
   updatedAt          DateTime  @updatedAt @db.Timestamptz
@@ -458,9 +462,31 @@ model Department {
   shifts           VolunteerShift[]
 
   @@unique([organizationId, name])
+  @@unique([organizationId, loginCode])
   @@index([organizationId])
   @@index([organizationId, isMain])
   @@map("department")
+}
+
+enum BeneficiarySearchKind {
+  name_token
+  phone_prefix
+}
+
+model BeneficiarySearchIndex {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String                @db.Uuid
+  beneficiaryId  String                @db.Uuid
+  kind           BeneficiarySearchKind
+  tokenHash      Bytes
+  createdAt      DateTime              @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  beneficiary  Beneficiary  @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@unique([beneficiaryId, kind, tokenHash])
+  @@index([organizationId, kind, tokenHash])
+  @@map("beneficiary_search_index")
 }
 
 model User {
@@ -503,7 +529,8 @@ model User {
   uploadedFiles   StoredFile[]         @relation("FileUploader")
   auditLogs       AuditLog[]           @relation("AuditActor")
   notifications   Notification[]
-  shifts          VolunteerShift[]
+  shifts                    VolunteerShift[]
+  beneficiaryAccessGrants   BeneficiaryAccessGrant[]
   // Generic creator/updater backrefs are intentionally omitted to keep the schema readable;
   // who-did-what is captured by AuditLog.
 
@@ -712,6 +739,7 @@ model Beneficiary {
   organization     Organization          @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   spouse           Spouse?
   children         Child[]
+  dependents       DependentPerson[]
   jobs             Job[]
   housings         Housing[]
   diseases         Disease[]
@@ -722,6 +750,7 @@ model Beneficiary {
   consents         Consent[]
   distributions    Distribution[]
   dedupRecords     CrossOrgDedupRecord[]
+  searchIndexes    BeneficiarySearchIndex[]
 
   @@unique([organizationId, code])
   @@unique([organizationId, cinHash])
@@ -778,9 +807,53 @@ model Child {
   deletedAt            DateTime?   @db.Timestamptz
 
   beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  diseases    Disease[]
 
   @@index([beneficiaryId])
   @@map("child")
+}
+
+enum CareRelationType {
+  mother
+  father
+  orphan
+  sibling
+  grandparent
+  uncle_aunt
+  other
+}
+
+/// Person under the beneficiary's care (not spouse/child), e.g. parent, orphan.
+model DependentPerson {
+  id             String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId  String           @db.Uuid
+  relationType   CareRelationType
+  relationOther  String?
+  firstNameEnc   Bytes
+  lastNameEnc    Bytes
+  fullNameHash   Bytes
+  gender         Gender
+  dateOfBirth    DateTime?        @db.Date
+  cinEnc         Bytes?
+  cinHash        Bytes?
+  phoneEnc       Bytes?
+  notesEnc       Bytes?
+  createdAt      DateTime         @default(now()) @db.Timestamptz
+  updatedAt      DateTime         @updatedAt @db.Timestamptz
+  deletedAt      DateTime?        @db.Timestamptz
+
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  diseases    Disease[]
+
+  @@index([beneficiaryId])
+  @@map("dependent_person")
+}
+
+enum HealthSubjectType {
+  beneficiary
+  spouse
+  child
+  dependent
 }
 
 // Polymorphic owner: beneficiary or spouse.
@@ -840,8 +913,11 @@ model Housing {
 }
 
 model Disease {
-  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  beneficiaryId       String        @db.Uuid
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  beneficiaryId       String            @db.Uuid
+  subjectType         HealthSubjectType @default(beneficiary)
+  childId             String?           @db.Uuid
+  dependentPersonId   String?           @db.Uuid
   // Either pick from a controlled list (name) or store free text encrypted (nameEnc).
   name                String? // controlled name (PII-LOW)
   nameEnc             Bytes? // [PII-HIGH] free-text alternative
@@ -856,9 +932,13 @@ model Disease {
   updatedAt           DateTime      @updatedAt @db.Timestamptz
   deletedAt           DateTime?     @db.Timestamptz
 
-  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  beneficiary       Beneficiary       @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+  child             Child?            @relation(fields: [childId], references: [id], onDelete: SetNull)
+  dependentPerson   DependentPerson?  @relation(fields: [dependentPersonId], references: [id], onDelete: SetNull)
 
   @@index([beneficiaryId])
+  @@index([childId])
+  @@index([dependentPersonId])
   @@map("disease")
 }
 
@@ -1887,4 +1967,20 @@ model Delegation {
   @@unique([governorateId, name])
   @@index([governorateId])
   @@map("delegation")
+}
+
+/// After successful beneficiary-file PIN, user may access PII for 24h.
+model BeneficiaryAccessGrant {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String   @db.Uuid
+  userId         String   @db.Uuid
+  expiresAt      DateTime @db.Timestamptz
+  createdAt      DateTime @default(now()) @db.Timestamptz
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([expiresAt])
+  @@map("beneficiary_access_grant")
 }

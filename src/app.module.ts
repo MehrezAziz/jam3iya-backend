@@ -21,6 +21,7 @@ import { CampaignModule } from './modules/campaign/campaign.module';
 import { FilesModule } from './modules/files/files.module';
 import { BillModule } from './modules/bill/bill.module';
 import { GeoModule } from './modules/geo/geo.module';
+import { DonorModule } from './modules/donor/donor.module';
 import type { Env } from './config/env';
 
 @Module({
@@ -29,6 +30,7 @@ import type { Env } from './config/env';
     PrismaModule,
     CryptoModule,
     AuthzModule,
+    TenancyModule,
     AuditModule,
     ThrottlerModule.forRootAsync({
       inject: [ConfigService],
@@ -41,7 +43,6 @@ import type { Env } from './config/env';
     }),
     AuthModule,
     PlatformModule,
-    TenancyModule,
     IamModule,
     BeneficiaryModule,
     DonationModule,
@@ -51,6 +52,7 @@ import type { Env } from './config/env';
     FilesModule,
     BillModule,
     GeoModule,
+    DonorModule,
     HealthModule,
   ],
   providers: [

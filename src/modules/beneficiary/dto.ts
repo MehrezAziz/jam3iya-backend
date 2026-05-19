@@ -79,6 +79,19 @@ export const upsertChildSchema = z.object({
 });
 export type UpsertChildDto = z.infer<typeof upsertChildSchema>;
 
+export const upsertDependentSchema = z.object({
+  relationType: z.enum(['mother', 'father', 'orphan', 'sibling', 'grandparent', 'uncle_aunt', 'other']),
+  relationOther: z.string().max(120).optional(),
+  firstName: z.string().min(1).max(200),
+  lastName: z.string().min(1).max(200),
+  gender: z.enum(['male', 'female']),
+  dateOfBirth: dateString.optional(),
+  cin: z.string().regex(/^\d{8}$/).optional(),
+  phone: z.string().max(40).optional(),
+  notes: z.string().max(2000).optional(),
+});
+export type UpsertDependentDto = z.infer<typeof upsertDependentSchema>;
+
 export const upsertSocialCoverageSchema = z.object({
   type: z.enum([
     'cnss',
@@ -136,6 +149,9 @@ export type UpsertHousingDto = z.infer<typeof upsertHousingSchema>;
 
 export const upsertDiseaseSchema = z
   .object({
+    subjectType: z.enum(['beneficiary', 'spouse', 'child', 'dependent']).optional().default('beneficiary'),
+    childId: z.string().uuid().optional(),
+    dependentPersonId: z.string().uuid().optional(),
     name: z.string().max(200).optional(),
     nameFree: z.string().max(500).optional(),
     diagnosisDate: dateString.optional(),

@@ -15,7 +15,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EncryptionService } from '../../common/crypto/encryption.service';
 import type { Env } from '../../config/env';
-import type { LoginDto, RegisterDonorDto } from './dto';
+import type { DepartmentLoginDto, LoginDto, RegisterDonorDto } from './dto';
 import type { AccessTokenPayload } from '../../common/guards/jwt-auth.guard';
 import { AuditService } from '../audit/audit.service';
 
@@ -43,6 +43,17 @@ export class AuthService {
   // -------------------------------------------------------------------
   // Login / sessions
   // -------------------------------------------------------------------
+  async departmentLogin(dto: DepartmentLoginDto, ip?: string, userAgent?: string): Promise<LoginResult> {
+    const org = await this.prisma.organization.findUnique({ where: { slug: dto.organizationSlug } });
+    if (!org) throw new UnauthorizedException('Invalid credentials');
+    const email = `${dto.loginCode.toLowerCase()}@${org.slug}.dept.local`;
+    return this.login(
+      { email, password: dto.password, organizationSlug: dto.organizationSlug },
+      ip,
+      userAgent,
+    );
+  }
+
   async login(dto: LoginDto, ip?: string, userAgent?: string): Promise<LoginResult> {
     const user = await this.findUserForLogin(dto.email, dto.organizationSlug);
     if (!user || !user.passwordHash || user.status === 'locked' || user.deletedAt) {
@@ -287,16 +298,39 @@ export class AuthService {
   // -------------------------------------------------------------------
   // Helpers
   // -------------------------------------------------------------------
-  private async findUserForLogin(email: string, organizationSlug?: string) {
+  private async findUserForLogin(identifier: string, organizationSlug?: string) {
+    const trimmed = identifier.trim();
+    const phoneDigits = trimmed.replace(/\D/g, '');
+    const isPhone = phoneDigits.length >= 8 && /^[\d\s+()-]+$/.test(trimmed);
+
     if (organizationSlug) {
       const org = await this.prisma.organization.findUnique({ where: { slug: organizationSlug } });
       if (!org) return null;
+
+      if (isPhone) {
+        const variants = [phoneDigits, phoneDigits.length === 8 ? `216${phoneDigits}` : null].filter(
+          Boolean,
+        ) as string[];
+        return this.prisma.user.findFirst({
+          where: { organizationId: org.id, phone: { in: variants }, deletedAt: null },
+        });
+      }
+
       return this.prisma.user.findUnique({
-        where: { organizationId_email: { organizationId: org.id, email } },
+        where: { organizationId_email: { organizationId: org.id, email: trimmed.toLowerCase() } },
       });
     }
-    // No org slug provided: only works if email is globally unique.
-    const matches = await this.prisma.user.findMany({ where: { email }, take: 2 });
+
+    if (isPhone) {
+      const matches = await this.prisma.user.findMany({
+        where: { phone: phoneDigits },
+        take: 2,
+      });
+      if (matches.length === 1) return matches[0];
+      return null;
+    }
+
+    const matches = await this.prisma.user.findMany({ where: { email: trimmed.toLowerCase() }, take: 2 });
     if (matches.length === 1) return matches[0];
     return null;
   }
@@ -331,6 +365,18 @@ export class AuthService {
     const accessTtl = this.config.get('JWT_ACCESS_TTL', { infer: true });
     const refreshTtl = this.config.get('JWT_REFRESH_TTL', { infer: true });
 
+    let deptId: string | undefined;
+    if (user.kind === 'staff') {
+      const assignments = await this.prisma.userDepartmentRole.findMany({
+        where: { userId: user.id, deletedAt: null },
+        select: { departmentId: true, role: { select: { privilegeLevel: true } } },
+      });
+      const unique = [...new Set(assignments.map((a) => a.departmentId))];
+      const maxPriv = assignments.reduce((m, a) => Math.max(m, a.role.privilegeLevel), 0);
+      // Org admins (privilege 100) see all beneficiaries; only department-scoped staff get JWT dept filter.
+      if (unique.length === 1 && maxPriv < 100) deptId = unique[0];
+    }
+
     const accessPayload: AccessTokenPayload = {
       sub: user.id,
       org: user.organizationId,
@@ -339,6 +385,7 @@ export class AuthService {
       nm: user.fullName,
       sid: sessionId,
       t2v: twoFactorVerifiedAt,
+      dept: deptId,
     };
     const accessToken = await this.jwt.signAsync(accessPayload, {
       secret: this.config.get('JWT_ACCESS_SECRET', { infer: true }),

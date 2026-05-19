@@ -15,9 +15,11 @@ import { AuthorizationService } from '../authz/authorization.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
   loginSchema,
+  departmentLoginSchema,
   registerDonorSchema,
   verify2faSchema,
   LoginDto,
+  DepartmentLoginDto,
   RegisterDonorDto,
   Verify2faDto,
 } from './dto';
@@ -40,6 +42,20 @@ export class AuthController {
   // -----------------------------------------------------------------
   // Public endpoints
   // -----------------------------------------------------------------
+  @Public()
+  @Post('login/department')
+  async departmentLogin(
+    @Body(new ZodValidationPipe(departmentLoginSchema)) dto: DepartmentLoginDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const ua = req.headers['user-agent'];
+    const result = await this.authService.departmentLogin(dto, req.ip, ua);
+    if ('needsTwoFactor' in result) return result;
+    this.setAuthCookies(res, result.accessToken, result.refreshToken, result.accessTokenMaxAgeSec, result.refreshTokenMaxAgeSec);
+    return { user: result.user };
+  }
+
   @Public()
   @Post('login')
   async login(

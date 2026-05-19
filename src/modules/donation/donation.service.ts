@@ -143,6 +143,12 @@ export class DonationService {
           donorNameSnapshot: true,
           notesEnc: true,
           campaign: { select: { name: true } },
+          bills: {
+            where: { deletedAt: null, status: 'issued' },
+            take: 1,
+            orderBy: { issuedAt: 'desc' },
+            select: { id: true, number: true, series: true, yearIssued: true },
+          },
         },
       }),
     ]);
@@ -162,6 +168,14 @@ export class DonationService {
       donorNameSnapshot: d.donorNameSnapshot,
       notes: d.notesEnc
         ? this.enc.decryptToString(d.notesEnc, organizationId, 'notes')
+        : null,
+      receiptBill: d.bills[0]
+        ? {
+            id: d.bills[0].id,
+            number: d.bills[0].number,
+            series: d.bills[0].series,
+            yearIssued: d.bills[0].yearIssued,
+          }
         : null,
     }));
 

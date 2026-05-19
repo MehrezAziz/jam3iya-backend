@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards, UseInterceptors } from '@nestjs/common';
 import {
   BillService,
   issueDonationReceiptSchema,
@@ -28,6 +28,12 @@ export class BillController {
     @Query(new ZodValidationPipe(listBillsQuerySchema)) query: ListBillsQuery,
   ) {
     return this.service.list(orgId, query);
+  }
+
+  @Get(':id')
+  @RequirePerm('bill.read')
+  getOne(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.getById(orgId, id);
   }
 
   @Post('donation-receipt')

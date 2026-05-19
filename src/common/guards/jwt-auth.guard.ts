@@ -42,6 +42,7 @@ export class JwtAuthGuard implements CanActivate {
         fullName: payload.nm,
         sessionId: payload.sid,
         twoFactorVerifiedAt: payload.t2v,
+        departmentId: payload.dept,
       };
       req.user = user;
       return true;
@@ -62,9 +63,10 @@ export class JwtAuthGuard implements CanActivate {
 export interface AccessTokenPayload {
   sub: string;
   org: string;
-  knd: 'staff' | 'donor';
+  knd: 'staff' | 'donor' | 'department';
   eml: string;
   nm: string;
   sid: string;
   t2v?: number;
+  dept?: string;
 }

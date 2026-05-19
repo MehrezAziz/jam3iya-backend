@@ -3,7 +3,8 @@ import type { Request } from 'express';
 export interface AuthenticatedUser {
   userId: string;
   organizationId: string;
-  kind: 'staff' | 'donor';
+  kind: 'staff' | 'donor' | 'department';
+  departmentId?: string;
   email: string;
   fullName: string;
   twoFactorVerifiedAt?: number;

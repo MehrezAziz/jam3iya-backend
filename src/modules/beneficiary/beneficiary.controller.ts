@@ -23,6 +23,8 @@ import {
   UpsertSpouseDto,
   upsertChildSchema,
   UpsertChildDto,
+  upsertDependentSchema,
+  UpsertDependentDto,
   upsertJobSchema,
   UpsertJobDto,
   upsertHousingSchema,
@@ -37,7 +39,8 @@ import { AuthorizationGuard } from '../../common/guards/authorization.guard';
 import { RequirePerm } from '../../common/decorators/require-perm.decorator';
 import { AuditAction } from '../../common/decorators/audit.decorator';
 import { AuditInterceptor } from '../../common/interceptors/audit.interceptor';
-import { CurrentOrg } from '../../common/decorators/current-user.decorator';
+import { CurrentOrg, CurrentUser } from '../../common/decorators/current-user.decorator';
+import type { AuthenticatedUser } from '../../common/types/request-context';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 
 @Controller('beneficiaries')
@@ -51,9 +54,17 @@ export class BeneficiaryController {
   @AuditAction({ action: 'beneficiary.list' })
   list(
     @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Query(new ZodValidationPipe(listBeneficiariesQuerySchema)) query: ListBeneficiariesQuery,
   ) {
-    return this.service.list(orgId, query);
+    return this.service.list(orgId, query, user.departmentId);
+  }
+
+  @Post('rebuild-search-index')
+  @RequirePerm('beneficiary.update')
+  @AuditAction({ action: 'beneficiary.rebuild_search_index' })
+  rebuildSearchIndex(@CurrentOrg() orgId: string) {
+    return this.service.rebuildAllSearchIndexes(orgId);
   }
 
   @Get(':id/summary')
@@ -64,12 +75,11 @@ export class BeneficiaryController {
   }
 
   @Get(':id/full')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true, requires2faRecent: false })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true, requires2faRecent: false })
   @AuditAction({
     action: 'beneficiary.read.full',
     resourceType: 'beneficiary',
     resourceIdParam: 'id',
-    includeReason: true,
   })
   readFull(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.readFull(orgId, id);
@@ -98,8 +108,8 @@ export class BeneficiaryController {
 
   // ----- Spouse ----------------------------------------------------------
   @Get(':id/spouse')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.spouse.read', resourceType: 'spouse', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.spouse.read', resourceType: 'spouse', resourceIdParam: 'id',  })
   getSpouse(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.getSpouse(orgId, id);
   }
@@ -124,8 +134,8 @@ export class BeneficiaryController {
 
   // ----- Children --------------------------------------------------------
   @Get(':id/children')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.children.read', resourceType: 'child', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.children.read', resourceType: 'child', resourceIdParam: 'id',  })
   listChildren(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.listChildren(orgId, id);
   }
@@ -164,10 +174,40 @@ export class BeneficiaryController {
     return this.service.deleteChild(orgId, id, childId);
   }
 
+  // ----- Dependents (under care) -----------------------------------------
+  @Get(':id/dependents')
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.dependents.read', resourceType: 'beneficiary', resourceIdParam: 'id' })
+  listDependents(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.service.listDependents(orgId, id);
+  }
+
+  @Post(':id/dependents')
+  @RequirePerm('beneficiary.update')
+  @AuditAction({ action: 'beneficiary.dependent.add', resourceType: 'dependent_person', resourceIdParam: 'id', captureDiff: true })
+  addDependent(
+    @CurrentOrg() orgId: string,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(upsertDependentSchema)) dto: UpsertDependentDto,
+  ) {
+    return this.service.addDependent(orgId, id, dto);
+  }
+
+  @Delete(':id/dependents/:dependentId')
+  @RequirePerm('beneficiary.update')
+  @AuditAction({ action: 'beneficiary.dependent.delete', resourceType: 'dependent_person' })
+  deleteDependent(
+    @CurrentOrg() orgId: string,
+    @Param('id') id: string,
+    @Param('dependentId') dependentId: string,
+  ) {
+    return this.service.deleteDependent(orgId, id, dependentId);
+  }
+
   // ----- Social coverage -------------------------------------------------
   @Get(':id/social-coverages')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.social_coverage.read', resourceType: 'beneficiary', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.social_coverage.read', resourceType: 'beneficiary', resourceIdParam: 'id',  })
   listSocialCoverages(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.listSocialCoverages(orgId, id);
   }
@@ -196,8 +236,8 @@ export class BeneficiaryController {
 
   // ----- Jobs ------------------------------------------------------------
   @Get(':id/jobs')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.jobs.read', resourceType: 'job', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.jobs.read', resourceType: 'job', resourceIdParam: 'id',  })
   listJobs(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.listJobs(orgId, id);
   }
@@ -226,8 +266,8 @@ export class BeneficiaryController {
 
   // ----- Housing ---------------------------------------------------------
   @Get(':id/housing')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.housing.read', resourceType: 'housing', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.housing.read', resourceType: 'housing', resourceIdParam: 'id',  })
   listHousing(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.listHousing(orgId, id);
   }
@@ -256,8 +296,8 @@ export class BeneficiaryController {
 
   // ----- Diseases --------------------------------------------------------
   @Get(':id/diseases')
-  @RequirePerm({ permissions: 'beneficiary.read.full', requiresReason: true })
-  @AuditAction({ action: 'beneficiary.diseases.read', resourceType: 'disease', resourceIdParam: 'id', includeReason: true })
+  @RequirePerm({ permissions: 'beneficiary.read.full', requiresBeneficiaryAccess: true })
+  @AuditAction({ action: 'beneficiary.diseases.read', resourceType: 'disease', resourceIdParam: 'id',  })
   listDiseases(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.listDiseases(orgId, id);
   }

@@ -6,7 +6,6 @@ import { AuthController } from './auth.controller';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthorizationGuard } from '../../common/guards/authorization.guard';
 import type { Env } from '../../config/env';
-
 @Global()
 @Module({
   imports: [

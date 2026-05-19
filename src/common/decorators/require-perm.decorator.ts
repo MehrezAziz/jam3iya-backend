@@ -7,6 +7,8 @@ export interface RequirePermOptions {
   mode?: 'all' | 'any';
   /** Caller must provide a typed reason (query/body) for sensitive actions. */
   requiresReason?: boolean;
+  /** Org PIN (if set) or active 24h grant required for beneficiary PII. */
+  requiresBeneficiaryAccess?: boolean;
   /** Caller must have a 2FA challenge within the last 5 minutes. */
   requires2faRecent?: boolean;
 }

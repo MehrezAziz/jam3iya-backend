@@ -114,7 +114,10 @@ const lines = [
   '',
 ];
 
-for (const [gov, delegations] of Object.entries(DATA)) {
+const stripGov = (name) => name.replace(/\s+Governorate$/i, '').trim();
+
+for (const [govKey, delegations] of Object.entries(DATA)) {
+  const gov = stripGov(govKey);
   lines.push(`INSERT INTO governorate (name) VALUES ('${esc(gov)}') ON CONFLICT (name) DO NOTHING;`);
   for (const d of delegations) {
     lines.push(

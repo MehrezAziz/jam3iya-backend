@@ -5,6 +5,7 @@ import {
   RequirePermOptions,
 } from '../decorators/require-perm.decorator';
 import { AuthorizationService } from '../../modules/authz/authorization.service';
+import { BeneficiaryAccessService } from '../../modules/tenancy/beneficiary-access.service';
 import type { AuthorizedRequest } from '../types/request-context';
 
 const TWO_FA_RECENT_WINDOW_SEC = 300;
@@ -14,6 +15,7 @@ export class AuthorizationGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly authz: AuthorizationService,
+    private readonly beneficiaryAccess: BeneficiaryAccessService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -45,6 +47,10 @@ export class AuthorizationGuard implements CanActivate {
         });
       }
       req.reason = reason.trim();
+    }
+
+    if (required.requiresBeneficiaryAccess) {
+      await this.beneficiaryAccess.assertAccess(req.user.organizationId, req.user.userId);
     }
 
     if (required.requires2faRecent) {

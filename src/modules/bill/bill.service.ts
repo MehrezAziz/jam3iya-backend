@@ -66,6 +66,50 @@ export class BillService {
     };
   }
 
+  async getById(organizationId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: { id: billId, organizationId, deletedAt: null },
+      select: {
+        id: true,
+        number: true,
+        series: true,
+        yearIssued: true,
+        issuedAt: true,
+        totalMinor: true,
+        currency: true,
+        status: true,
+        isTaxReceipt: true,
+        recipientType: true,
+        recipientSnapshot: true,
+        linkedDonationId: true,
+        organization: { select: { legalName: true, fiscalId: true, address: true, phone: true } },
+        linkedDonation: {
+          select: {
+            id: true,
+            kind: true,
+            isAnonymous: true,
+            spendCategory: true,
+            receivedAt: true,
+            donorNameSnapshot: true,
+            campaign: { select: { name: true } },
+          },
+        },
+      },
+    });
+    if (!bill) throw new NotFoundException('Bill not found');
+    return {
+      ...bill,
+      totalMinor: Number(bill.totalMinor),
+      recipientSnapshot: bill.recipientSnapshot as Record<string, unknown>,
+      linkedDonation: bill.linkedDonation
+        ? {
+            ...bill.linkedDonation,
+            campaignName: bill.linkedDonation.campaign?.name ?? null,
+          }
+        : null,
+    };
+  }
+
   async issueDonationReceipt(organizationId: string, issuedById: string | null, dto: IssueDonationReceiptDto) {
     const donation = await this.prisma.donation.findFirst({
       where: { id: dto.donationId, organizationId, deletedAt: null, kind: 'cash' },
@@ -83,10 +127,14 @@ export class BillService {
     const series = dto.series ?? 'RECEIPT';
 
     return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<{ next_bill_number: number }[]>`
-        SELECT next_bill_number(${organizationId}::uuid, ${series}, ${year}) AS next_bill_number
-      `;
-      const seq = Number(rows[0]?.next_bill_number ?? 1);
+      const counter = await tx.billNumberCounter.upsert({
+        where: {
+          organizationId_series_year: { organizationId, series, year },
+        },
+        create: { organizationId, series, year, lastValue: 1 },
+        update: { lastValue: { increment: 1 } },
+      });
+      const seq = counter.lastValue;
       const number = `${series}-${year}-${String(seq).padStart(7, '0')}`;
 
       const org = await tx.organization.findUnique({
