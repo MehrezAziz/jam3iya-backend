@@ -59,8 +59,17 @@ export class DonationController {
 
   @Get('stats')
   @RequirePerm('report.read.financial')
-  stats(@CurrentOrg() orgId: string) {
-    return this.service.stats(orgId);
+  async stats(@CurrentOrg() orgId: string, @CurrentUser() user: AuthenticatedUser) {
+    const isMainViewer = await this.service.canViewOrgTreasury(orgId, user.userId);
+    const scopeDepartmentId =
+      user.departmentId && !isMainViewer ? user.departmentId : undefined;
+    return this.service.stats(
+      orgId,
+      scopeDepartmentId,
+      isMainViewer,
+      user.departmentId,
+      user.userId,
+    );
   }
 
   @Post('cash')
@@ -71,7 +80,7 @@ export class DonationController {
     @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createCashDonationSchema)) dto: CreateCashDonationDto,
   ) {
-    return this.service.createCash(orgId, user.userId, dto);
+    return this.service.createCash(orgId, user.userId, user.departmentId, dto);
   }
 
   @Post('in-kind')

@@ -435,6 +435,7 @@ model Organization {
   paymentProviders         PaymentProviderConfig[]
   beneficiaryAccessGrants  BeneficiaryAccessGrant[]
   beneficiarySearchIndexes BeneficiarySearchIndex[]
+  departmentTransfers      DepartmentTransfer[]
 
   @@index([slug])
   @@index([status])
@@ -459,15 +460,42 @@ model Department {
   organization     Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   parentDepartment Department?          @relation("DepartmentHierarchy", fields: [parentDepartmentId], references: [id], onDelete: Restrict)
   childDepartments Department[]         @relation("DepartmentHierarchy")
-  userAssignments  UserDepartmentRole[]
-  cases            Case[]
-  shifts           VolunteerShift[]
+  userAssignments       UserDepartmentRole[]
+  cases                 Case[]
+  shifts                VolunteerShift[]
+  donations             Donation[]           @relation("DonationDepartment")
+  transfersOut          DepartmentTransfer[] @relation("TransferFrom")
+  transfersIn           DepartmentTransfer[] @relation("TransferTo")
 
   @@unique([organizationId, name])
   @@unique([organizationId, loginCode])
   @@index([organizationId])
   @@index([organizationId, isMain])
   @@map("department")
+}
+
+/// Internal movement of cash balance between departments (recorded in the system).
+model DepartmentTransfer {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId   String   @db.Uuid
+  fromDepartmentId String   @db.Uuid
+  toDepartmentId   String   @db.Uuid
+  amountMinor      BigInt
+  currency         String   @default("TND") @db.Char(3)
+  notes            String?
+  createdById      String   @db.Uuid
+  createdAt        DateTime @default(now()) @db.Timestamptz
+
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  fromDepartment Department   @relation("TransferFrom", fields: [fromDepartmentId], references: [id], onDelete: Restrict)
+  toDepartment   Department   @relation("TransferTo", fields: [toDepartmentId], references: [id], onDelete: Restrict)
+  createdBy      User         @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([organizationId])
+  @@index([fromDepartmentId])
+  @@index([toDepartmentId])
+  @@index([createdAt])
+  @@map("department_transfer")
 }
 
 enum BeneficiarySearchKind {
@@ -529,9 +557,10 @@ model User {
   departmentRoles UserDepartmentRole[]
   donorProfile    Donor?
   uploadedFiles   StoredFile[]         @relation("FileUploader")
-  auditLogs       AuditLog[]           @relation("AuditActor")
-  notifications   Notification[]
-  shifts                    VolunteerShift[]
+  auditLogs            AuditLog[]           @relation("AuditActor")
+  notifications        Notification[]
+  shifts               VolunteerShift[]
+  departmentTransfers  DepartmentTransfer[]
   beneficiaryAccessGrants   BeneficiaryAccessGrant[]
   // Generic creator/updater backrefs are intentionally omitted to keep the schema readable;
   // who-did-what is captured by AuditLog.
@@ -1161,6 +1190,7 @@ model Donation {
   currency              String       @default("TND") @db.Char(3)
   receivedAt            DateTime     @default(now()) @db.Timestamptz
   receivedById          String?      @db.Uuid // staff cashier
+  departmentId          String?      @db.Uuid // treasury owner department
   // In-kind donation
   inKindItemId          String?      @db.Uuid
   inKindLotId           String?      @db.Uuid
@@ -1185,6 +1215,7 @@ model Donation {
   deletedAt DateTime? @db.Timestamptz
 
   organization Organization         @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  department   Department?          @relation("DonationDepartment", fields: [departmentId], references: [id], onDelete: SetNull)
   donor        Donor?               @relation(fields: [donorId], references: [id], onDelete: SetNull)
   campaign     Campaign?            @relation(fields: [campaignId], references: [id], onDelete: SetNull)
   occasion     Occasion?            @relation(fields: [occasionId], references: [id], onDelete: SetNull)
@@ -1203,6 +1234,7 @@ model Donation {
   @@index([occasionId])
   @@index([pledgeId])
   @@index([kind])
+  @@index([departmentId])
   @@map("donation")
 }
 

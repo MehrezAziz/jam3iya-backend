@@ -22,6 +22,7 @@ import { FilesModule } from './modules/files/files.module';
 import { BillModule } from './modules/bill/bill.module';
 import { GeoModule } from './modules/geo/geo.module';
 import { DonorModule } from './modules/donor/donor.module';
+import { TreasuryModule } from './modules/treasury/treasury.module';
 import type { Env } from './config/env';
 
 @Module({
@@ -53,6 +54,7 @@ import type { Env } from './config/env';
     BillModule,
     GeoModule,
     DonorModule,
+    TreasuryModule,
     HealthModule,
   ],
   providers: [

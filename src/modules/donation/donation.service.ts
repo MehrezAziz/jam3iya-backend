@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EncryptionService } from '../../common/crypto/encryption.service';
+import { TreasuryService } from '../treasury/treasury.service';
 import { z } from 'zod';
 
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -96,6 +97,7 @@ export class DonationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly enc: EncryptionService,
+    private readonly treasury: TreasuryService,
   ) {}
 
   async list(
@@ -104,29 +106,18 @@ export class DonationService {
     scopeDepartmentId?: string,
   ) {
     const departmentId = scopeDepartmentId ?? query.departmentId;
-    let receiverIdsForDept: string[] | undefined;
+    let donationDeptFilter: Prisma.DonationWhereInput = {};
     if (departmentId) {
-      const assignments = await this.prisma.userDepartmentRole.findMany({
-        where: {
-          departmentId,
-          deletedAt: null,
-          user: { organizationId, deletedAt: null },
-        },
-        select: { userId: true },
-      });
-      receiverIdsForDept = [...new Set(assignments.map((a) => a.userId))];
+      const receiverIds = await this.treasury.userIdsForDepartment(organizationId, departmentId);
+      donationDeptFilter = this.treasury.donationWhereForDepartment(
+        organizationId,
+        departmentId,
+        receiverIds,
+      );
     }
 
     const where: Prisma.DonationWhereInput = {
-      organizationId,
-      deletedAt: null,
-      ...(receiverIdsForDept !== undefined
-        ? {
-            receivedById: receiverIdsForDept.length
-              ? { in: receiverIdsForDept }
-              : { in: ['00000000-0000-0000-0000-000000000000'] },
-          }
-        : {}),
+      ...(departmentId ? donationDeptFilter : { organizationId, deletedAt: null }),
       ...(query.kind ? { kind: query.kind } : {}),
       ...(query.campaignIds?.length
         ? { campaignId: { in: query.campaignIds } }
@@ -168,8 +159,10 @@ export class DonationService {
           isAnonymous: true,
           donorNameSnapshot: true,
           receivedById: true,
+          departmentId: true,
           notesEnc: true,
           campaign: { select: { name: true } },
+          department: { select: { id: true, name: true } },
           bills: {
             where: { deletedAt: null, status: 'issued' },
             take: 1,
@@ -201,7 +194,9 @@ export class DonationService {
     }
 
     const items = rows.map((row) => {
-      const dept = row.receivedById ? (deptByReceiver.get(row.receivedById) ?? null) : null;
+      const dept =
+        row.department ??
+        (row.receivedById ? (deptByReceiver.get(row.receivedById) ?? null) : null);
       return {
       id: row.id,
       kind: row.kind,
@@ -234,7 +229,17 @@ export class DonationService {
     return { total, items, limit: query.limit, offset: query.offset };
   }
 
-  async createCash(organizationId: string, receivedById: string | null, dto: CreateCashDonationDto) {
+  async createCash(
+    organizationId: string,
+    receivedById: string | null,
+    userDepartmentId: string | undefined,
+    dto: CreateCashDonationDto,
+  ) {
+    const departmentId = await this.treasury.resolveDonationDepartmentId(
+      organizationId,
+      userDepartmentId,
+      receivedById,
+    );
     if (dto.donorId) {
       const donor = await this.prisma.donor.findFirst({ where: { id: dto.donorId, organizationId } });
       if (!donor) throw new NotFoundException('Donor not found in this organization');
@@ -270,6 +275,7 @@ export class DonationService {
           spendCategory: dto.spendCategory ?? null,
           receivedAt,
           receivedById,
+          departmentId,
           isAnonymous: dto.isAnonymous ?? !dto.donorId,
           donorNameSnapshot: dto.donorNameSnapshot ?? null,
           donorFiscalIdSnapshot: dto.donorFiscalIdSnapshot ?? null,
@@ -468,44 +474,82 @@ export class DonationService {
     return items.map((b) => ({ ...b, totalMinor: Number(b.totalMinor) }));
   }
 
-  async stats(organizationId: string) {
+  canViewOrgTreasury(organizationId: string, userId: string) {
+    return this.treasury.userHasMainDepartmentAccess(organizationId, userId);
+  }
+
+  async stats(
+    organizationId: string,
+    scopeDepartmentId?: string,
+    includeDepartmentBreakdown = false,
+    viewerDepartmentId?: string,
+    userId?: string,
+  ) {
     const today = new Date();
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const startOfYear = new Date(today.getFullYear(), 0, 1);
 
+    let balanceDeptId = scopeDepartmentId ?? viewerDepartmentId;
+    if (!balanceDeptId && includeDepartmentBreakdown) {
+      balanceDeptId = (await this.treasury.getMainDepartmentId(organizationId)) ?? undefined;
+    }
+    const balancePromise = balanceDeptId
+      ? this.treasury.getDepartmentBalance(organizationId, balanceDeptId)
+      : null;
+
+    const donationBase: Prisma.DonationWhereInput = scopeDepartmentId
+      ? await this.scopedDonationWhere(organizationId, scopeDepartmentId)
+      : { organizationId, deletedAt: null, cancelledAt: null, kind: { not: 'in_kind' } };
+
+    const distBase = scopeDepartmentId
+      ? {
+          organizationId,
+          deletedAt: null,
+          status: 'delivered' as const,
+          beneficiary: { primaryDepartmentId: scopeDepartmentId },
+        }
+      : {
+          organizationId,
+          deletedAt: null,
+          status: 'delivered' as const,
+        };
+
+    const beneficiaryWhere = scopeDepartmentId
+      ? { organizationId, deletedAt: null, status: 'active' as const, primaryDepartmentId: scopeDepartmentId }
+      : { organizationId, deletedAt: null, status: 'active' as const };
+
+    const caseWhere: Prisma.CaseWhereInput = scopeDepartmentId
+      ? {
+          organizationId,
+          deletedAt: null,
+          state: { in: ['submitted', 'under_review'] },
+          departmentId: scopeDepartmentId,
+        }
+      : {
+          organizationId,
+          deletedAt: null,
+          state: { in: ['submitted', 'under_review'] },
+        };
+
     const [donationsAgg, distributionsAgg, beneficiariesCount, openCases, monthlyDonations, monthlyDistributions] =
       await Promise.all([
         this.prisma.donation.aggregate({
-          where: { organizationId, deletedAt: null, receivedAt: { gte: startOfMonth }, kind: { not: 'in_kind' } },
+          where: { ...donationBase, receivedAt: { gte: startOfMonth } },
           _sum: { amountMinor: true },
           _count: true,
         }),
         this.prisma.distribution.aggregate({
-          where: { organizationId, deletedAt: null, deliveredAt: { gte: startOfMonth }, status: 'delivered' },
+          where: { ...distBase, deliveredAt: { gte: startOfMonth } },
           _count: true,
         }),
-        this.prisma.beneficiary.count({
-          where: { organizationId, deletedAt: null, status: 'active' },
-        }),
-        this.prisma.case.count({
-          where: { organizationId, deletedAt: null, state: { in: ['submitted', 'under_review'] } },
-        }),
+        this.prisma.beneficiary.count({ where: beneficiaryWhere }),
+        this.prisma.case.count({ where: caseWhere }),
         this.prisma.donation.findMany({
-          where: {
-            organizationId,
-            deletedAt: null,
-            receivedAt: { gte: startOfYear },
-            kind: { not: 'in_kind' },
-          },
+          where: { ...donationBase, receivedAt: { gte: startOfYear } },
           select: { receivedAt: true, amountMinor: true },
         }),
         this.prisma.distribution.findMany({
-          where: {
-            organizationId,
-            deletedAt: null,
-            deliveredAt: { gte: startOfYear, not: null },
-            status: 'delivered',
-          },
+          where: { ...distBase, deliveredAt: { gte: startOfYear, not: null } },
           select: {
             deliveredAt: true,
             lines: { where: { lineKind: 'cash' }, select: { amountMinor: true } },
@@ -516,12 +560,7 @@ export class DonationService {
     const distCashMonth = await this.prisma.distributionLine.aggregate({
       where: {
         lineKind: 'cash',
-        distribution: {
-          organizationId,
-          deletedAt: null,
-          status: 'delivered',
-          deliveredAt: { gte: startOfMonth },
-        },
+        distribution: { ...distBase, deliveredAt: { gte: startOfMonth } },
       },
       _sum: { amountMinor: true },
     });
@@ -540,7 +579,76 @@ export class DonationService {
       }),
     );
 
+    const balance = balancePromise ? await balancePromise : null;
+
+    let departmentSeries: Array<{
+      departmentId: string;
+      departmentName: string;
+      donationsByMonth: ReturnType<DonationService['groupByMonth']>;
+      distributionsByMonth: ReturnType<DonationService['groupByMonth']>;
+      availableBalanceMinor: number;
+    }> | undefined;
+
+    if (includeDepartmentBreakdown) {
+      const depts = await this.prisma.department.findMany({
+        where: { organizationId, deletedAt: null },
+        select: { id: true, name: true },
+        orderBy: { name: 'asc' },
+      });
+      departmentSeries = await Promise.all(
+        depts.map(async (dept) => {
+          const deptDonationWhere = await this.scopedDonationWhere(organizationId, dept.id);
+          const [deptDonations, deptDists, deptBalance] = await Promise.all([
+            this.prisma.donation.findMany({
+              where: { ...deptDonationWhere, receivedAt: { gte: startOfYear } },
+              select: { receivedAt: true, amountMinor: true },
+            }),
+            this.prisma.distribution.findMany({
+              where: {
+                organizationId,
+                deletedAt: null,
+                status: 'delivered',
+                deliveredAt: { gte: startOfYear, not: null },
+                beneficiary: { primaryDepartmentId: dept.id },
+              },
+              select: {
+                deliveredAt: true,
+                lines: { where: { lineKind: 'cash' }, select: { amountMinor: true } },
+              },
+            }),
+            this.treasury.getDepartmentBalance(organizationId, dept.id),
+          ]);
+          return {
+            departmentId: dept.id,
+            departmentName: dept.name,
+            donationsByMonth: this.groupByMonth(
+              deptDonations.map((d) => ({ at: d.receivedAt, amountMinor: Number(d.amountMinor) })),
+            ),
+            distributionsByMonth: this.groupByMonth(
+              deptDists.flatMap((d) => {
+                const sum = d.lines.reduce((acc, l) => acc + Number(l.amountMinor ?? 0), 0);
+                return d.deliveredAt ? [{ at: d.deliveredAt, amountMinor: sum }] : [];
+              }),
+            ),
+            availableBalanceMinor: deptBalance.availableBalanceMinor,
+          };
+        }),
+      );
+    }
+
+    const orgBalances = includeDepartmentBreakdown
+      ? await this.treasury.listAllBalances(organizationId)
+      : undefined;
+
     return {
+      scopeDepartmentId: scopeDepartmentId ?? null,
+      scopeDepartmentName: balance?.departmentName ?? null,
+      availableBalanceMinor: balance?.availableBalanceMinor ?? 0,
+      totalDonationsMinor: balance?.donationsMinor ?? 0,
+      totalDistributionsCashMinor: balance?.distributionsCashMinor ?? 0,
+      canManageTransfers: userId
+        ? await this.treasury.userHasMainDepartmentAccess(organizationId, userId)
+        : false,
       month: {
         donationsCount: donationsAgg._count,
         donationsSumMinor: Number(donationsAgg._sum.amountMinor ?? 0n),
@@ -551,7 +659,23 @@ export class DonationService {
       distributionsByMonth,
       currentActiveBeneficiaries: beneficiariesCount,
       openCases,
+      departmentSeries,
+      departmentBalances: orgBalances,
     };
+  }
+
+  private async scopedDonationWhere(organizationId: string, departmentId: string) {
+    const dept = await this.prisma.department.findFirst({
+      where: { id: departmentId, organizationId, deletedAt: null },
+      select: { isMain: true },
+    });
+    const receiverIds = await this.treasury.userIdsForDepartment(organizationId, departmentId);
+    return this.treasury.donationWhereForDepartment(
+      organizationId,
+      departmentId,
+      receiverIds,
+      dept?.isMain ?? false,
+    );
   }
 
   private groupByMonth(rows: { at: Date; amountMinor: number }[]) {
