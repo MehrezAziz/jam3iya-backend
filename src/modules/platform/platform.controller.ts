@@ -25,6 +25,8 @@ import {
   UpdateOrganizationDto,
   suspendOrganizationSchema,
   SuspendOrganizationDto,
+  resetOrgAdminPasswordSchema,
+  ResetOrgAdminPasswordDto,
 } from './dto';
 
 @UseGuards(JwtAuthGuard, AuthorizationGuard)
@@ -73,6 +75,24 @@ export class PlatformController {
     @Body(new ZodValidationPipe(updateOrganizationSchema)) dto: UpdateOrganizationDto,
   ) {
     return this.platform.updateOrganization(user.userId, id, dto);
+  }
+
+  @Post(':orgId/admins/:userId/reset-password')
+  @HttpCode(200)
+  @RequirePerm('platform.org.admin.reset_password')
+  @AuditAction({
+    action: 'platform.org.admin.reset_password',
+    resourceType: 'user',
+    resourceIdParam: 'userId',
+    captureDiff: true,
+  })
+  resetAdminPassword(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('orgId') orgId: string,
+    @Param('userId') userId: string,
+    @Body(new ZodValidationPipe(resetOrgAdminPasswordSchema)) dto: ResetOrgAdminPasswordDto,
+  ) {
+    return this.platform.resetOrgAdminPassword(user.userId, orgId, userId, dto);
   }
 
   @Patch(':id/suspend')

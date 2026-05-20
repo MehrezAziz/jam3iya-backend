@@ -26,16 +26,17 @@ export class BeneficiaryService {
 
   async list(organizationId: string, query: ListBeneficiariesQuery, scopeDepartmentId?: string) {
     const searchOr = query.q ? this.buildSearchOr(organizationId, query.q) : undefined;
+    const departmentFilter = scopeDepartmentId ?? query.departmentId;
     const where: Prisma.BeneficiaryWhereInput = {
       organizationId,
       deletedAt: null,
-      ...(scopeDepartmentId ? { primaryDepartmentId: scopeDepartmentId } : {}),
+      ...(departmentFilter ? { primaryDepartmentId: departmentFilter } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.region ? { region: { equals: query.region } } : {}),
       ...(searchOr ? { OR: searchOr } : {}),
     };
 
-    const [total, items] = await Promise.all([
+    const [total, rows] = await Promise.all([
       this.prisma.beneficiary.count({ where }),
       this.prisma.beneficiary.findMany({
         where,
@@ -47,6 +48,7 @@ export class BeneficiaryService {
           region: true,
           city: true,
           publicAlias: true,
+          primaryDepartmentId: true,
           createdAt: true,
           lastVerifiedAt: true,
           validUntil: true,
@@ -56,6 +58,34 @@ export class BeneficiaryService {
         take: query.limit,
       }),
     ]);
+
+    const deptIds = [
+      ...new Set(rows.map((r) => r.primaryDepartmentId).filter((id): id is string => !!id)),
+    ];
+    const deptMap = new Map<string, string>();
+    if (deptIds.length > 0) {
+      const depts = await this.prisma.department.findMany({
+        where: { id: { in: deptIds }, organizationId, deletedAt: null },
+        select: { id: true, name: true },
+      });
+      for (const d of depts) deptMap.set(d.id, d.name);
+    }
+
+    const items = rows.map((r) => ({
+      id: r.id,
+      code: r.code,
+      gender: r.gender,
+      status: r.status,
+      region: r.region,
+      city: r.city,
+      publicAlias: r.publicAlias,
+      createdAt: r.createdAt,
+      lastVerifiedAt: r.lastVerifiedAt,
+      validUntil: r.validUntil,
+      departmentId: r.primaryDepartmentId,
+      departmentName: r.primaryDepartmentId ? (deptMap.get(r.primaryDepartmentId) ?? null) : null,
+    }));
+
     return { total, items, limit: query.limit, offset: query.offset };
   }
 

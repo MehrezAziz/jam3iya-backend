@@ -35,9 +35,10 @@ export class DonationController {
   @RequirePerm({ permissions: ['donor.read', 'donation.create.cash'], mode: 'any' })
   list(
     @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Query(new ZodValidationPipe(listDonationsQuerySchema)) query: ListDonationsQuery,
   ) {
-    return this.service.list(orgId, query);
+    return this.service.list(orgId, query, user.departmentId);
   }
 
   @Get('mine')

@@ -63,14 +63,45 @@ export class PlatformService {
     }));
   }
 
-  async getOrganization(id: string): Promise<OrganizationSummary> {
+  async getOrganization(id: string): Promise<OrganizationDetail> {
     const o = await this.prisma.organization.findUnique({
       where: { id },
       include: {
         _count: { select: { users: { where: { deletedAt: null } }, departments: { where: { deletedAt: null } } } },
+        departments: {
+          where: { isMain: true, deletedAt: null },
+          take: 1,
+          select: { name: true, region: true, city: true },
+        },
       },
     });
     if (!o || o.deletedAt) throw new NotFoundException('Organization not found');
+
+    const admins = await this.prisma.user.findMany({
+      where: {
+        organizationId: id,
+        deletedAt: null,
+        kind: 'staff',
+        departmentRoles: {
+          some: {
+            deletedAt: null,
+            role: { name: ORG_ADMIN_ROLE, isSystem: true, deletedAt: null },
+          },
+        },
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        phone: true,
+        status: true,
+        mustChangePassword: true,
+        lastLoginAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const mainDept = o.departments[0] ?? null;
     return {
       id: o.id,
       legalName: o.legalName,
@@ -82,9 +113,92 @@ export class PlatformService {
       status: o.status,
       publicPageEnabled: o.publicPageEnabled,
       fiscalId: o.fiscalId,
+      email: o.email,
+      address: o.address,
+      phone: o.phone,
+      website: o.website,
       createdAt: o.createdAt,
       userCount: o._count.users,
       departmentCount: o._count.departments,
+      mainDepartment: mainDept
+        ? { name: mainDept.name, region: mainDept.region, city: mainDept.city }
+        : null,
+      admins: admins.map((a) => ({
+        id: a.id,
+        email: a.email,
+        fullName: a.fullName,
+        phone: a.phone,
+        status: a.status,
+        mustChangePassword: a.mustChangePassword,
+        lastLoginAt: a.lastLoginAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  async resetOrgAdminPassword(
+    actorUserId: string,
+    organizationId: string,
+    userId: string,
+    dto: { newPassword?: string },
+  ): Promise<{ userId: string; email: string; oneTimePassword: string | null; mustChangePassword: boolean }> {
+    const org = await this.prisma.organization.findUnique({ where: { id: organizationId } });
+    if (!org || org.deletedAt) throw new NotFoundException('Organization not found');
+    if (org.slug === PLATFORM_SLUG) {
+      throw new BadRequestException('Cannot reset password for platform organization users here');
+    }
+
+    const admin = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+        organizationId,
+        deletedAt: null,
+        kind: 'staff',
+        departmentRoles: {
+          some: {
+            deletedAt: null,
+            role: { name: ORG_ADMIN_ROLE, isSystem: true, deletedAt: null },
+          },
+        },
+      },
+    });
+    if (!admin) throw new NotFoundException('Organization admin user not found');
+
+    const generated = dto.newPassword ? null : this.generateOneTimePassword();
+    const plain = dto.newPassword ?? (generated as string);
+    const passwordHash = await argon2.hash(plain, { type: argon2.argon2id });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash,
+          mustChangePassword: !dto.newPassword,
+          lastPasswordChangeAt: new Date(),
+          failedLoginCount: 0,
+          lockedUntil: null,
+        },
+      });
+      await tx.userSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date(), revokedReason: 'password_reset_by_platform' },
+      });
+    });
+
+    await this.audit.log({
+      organizationId: null,
+      actorUserId,
+      action: 'platform.org.admin.reset_password',
+      resourceType: 'user',
+      resourceId: userId,
+      outcome: 'allow',
+      after: { organizationId, adminEmail: admin.email, generated: !dto.newPassword },
+    });
+
+    return {
+      userId: admin.id,
+      email: admin.email,
+      oneTimePassword: generated,
+      mustChangePassword: !dto.newPassword,
     };
   }
 
@@ -132,6 +246,8 @@ export class PlatformService {
             name: dto.mainDepartmentName,
             description: 'Main department',
             isMain: true,
+            region: dto.mainDepartmentRegion?.trim() || null,
+            city: dto.mainDepartmentCity?.trim() || null,
           },
         });
         const admin = await tx.user.create({
@@ -332,6 +448,23 @@ export interface OrganizationSummary {
   createdAt: Date;
   userCount: number;
   departmentCount: number;
+}
+
+export interface OrganizationDetail extends OrganizationSummary {
+  email: string | null;
+  address: string | null;
+  phone: string | null;
+  website: string | null;
+  mainDepartment: { name: string; region: string | null; city: string | null } | null;
+  admins: Array<{
+    id: string;
+    email: string;
+    fullName: string;
+    phone: string | null;
+    status: string;
+    mustChangePassword: boolean;
+    lastLoginAt: string | null;
+  }>;
 }
 
 export interface CreateOrganizationResult {

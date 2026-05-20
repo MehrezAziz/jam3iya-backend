@@ -44,11 +44,12 @@ export class AuthService {
   // Login / sessions
   // -------------------------------------------------------------------
   async departmentLogin(dto: DepartmentLoginDto, ip?: string, userAgent?: string): Promise<LoginResult> {
-    const org = await this.prisma.organization.findUnique({ where: { slug: dto.organizationSlug } });
-    if (!org) throw new UnauthorizedException('Invalid credentials');
-    const email = `${dto.loginCode.toLowerCase()}@${org.slug}.dept.local`;
     return this.login(
-      { email, password: dto.password, organizationSlug: dto.organizationSlug },
+      {
+        email: dto.email.trim().toLowerCase(),
+        password: dto.password,
+        organizationSlug: dto.organizationSlug,
+      },
       ip,
       userAgent,
     );

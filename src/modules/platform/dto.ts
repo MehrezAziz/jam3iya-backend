@@ -31,6 +31,8 @@ export const createOrganizationSchema = z
         .optional(),
     }),
     mainDepartmentName: z.string().min(2).max(100).default('Administration'),
+    mainDepartmentRegion: z.string().max(120).optional(),
+    mainDepartmentCity: z.string().max(120).optional(),
   })
   .strict();
 export type CreateOrganizationDto = z.infer<typeof createOrganizationSchema>;
@@ -59,3 +61,11 @@ export const suspendOrganizationSchema = z
   })
   .strict();
 export type SuspendOrganizationDto = z.infer<typeof suspendOrganizationSchema>;
+
+export const resetOrgAdminPasswordSchema = z
+  .object({
+    /** If omitted, a one-time password is generated and returned once. */
+    newPassword: z.string().min(12).max(128).optional(),
+  })
+  .strict();
+export type ResetOrgAdminPasswordDto = z.infer<typeof resetOrgAdminPasswordSchema>;

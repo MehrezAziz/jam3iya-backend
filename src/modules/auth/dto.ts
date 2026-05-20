@@ -10,7 +10,7 @@ export type LoginDto = z.infer<typeof loginSchema>;
 
 export const departmentLoginSchema = z.object({
   organizationSlug: z.string().min(1).max(80),
-  loginCode: z.string().min(2).max(40),
+  email: z.string().email(),
   password: z.string().min(8).max(200),
 });
 export type DepartmentLoginDto = z.infer<typeof departmentLoginSchema>;

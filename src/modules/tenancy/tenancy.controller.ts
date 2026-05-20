@@ -15,22 +15,16 @@ const createDeptSchema = z
     name: z.string().min(1).max(120),
     description: z.string().max(1000).optional(),
     isMain: z.boolean().optional(),
-    loginCode: z
-      .string()
-      .min(2)
-      .max(40)
-      .regex(/^[a-z0-9_-]+$/i)
-      .transform((s) => s.toLowerCase())
-      .optional(),
-    password: z.string().min(8).max(200).optional(),
+    loginEmail: z.string().email().max(254).transform((s) => s.toLowerCase()).optional(),
+    password: z.string().min(12, 'Password must be at least 12 characters').max(200).optional(),
   })
-  .refine((d) => !d.loginCode || d.password, {
-    message: 'Password is required when a department login code is set',
+  .refine((d) => !d.loginEmail || d.password, {
+    message: 'Password is required when a department login email is set',
     path: ['password'],
   })
-  .refine((d) => !d.password || d.loginCode, {
-    message: 'Login code is required when a department password is set',
-    path: ['loginCode'],
+  .refine((d) => !d.password || d.loginEmail, {
+    message: 'Login email is required when a department password is set',
+    path: ['loginEmail'],
   });
 type CreateDeptDto = z.infer<typeof createDeptSchema>;
 
@@ -137,6 +131,23 @@ export class TenancyController {
     @Body(new ZodValidationPipe(verifyPinSchema)) dto: VerifyPinDto,
   ) {
     return this.beneficiaryAccess.verifyPin(orgId, user.userId, dto.pin);
+  }
+
+  @UseGuards(JwtAuthGuard, AuthorizationGuard)
+  @Get('departments/main')
+  @RequirePerm('department.read')
+  mainDepartment(@CurrentOrg() orgId: string) {
+    return this.tenancy.getMainDepartment(orgId);
+  }
+
+  @UseGuards(JwtAuthGuard, AuthorizationGuard)
+  @Put('departments/main/location')
+  @RequirePerm('org.manage_settings')
+  updateMainDepartmentLocation(
+    @CurrentOrg() orgId: string,
+    @Body() body: { region?: string | null; city?: string | null },
+  ) {
+    return this.tenancy.updateMainDepartmentLocation(orgId, body);
   }
 
   @UseGuards(JwtAuthGuard, AuthorizationGuard)

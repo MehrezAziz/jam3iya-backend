@@ -47,6 +47,7 @@ export const listDonationsQuerySchema = z.object({
   ),
   from: dateOnly.optional(),
   to: dateOnly.optional(),
+  departmentId: z.string().uuid().optional(),
 });
 export type ListDonationsQuery = z.infer<typeof listDonationsQuerySchema>;
 
@@ -97,10 +98,35 @@ export class DonationService {
     private readonly enc: EncryptionService,
   ) {}
 
-  async list(organizationId: string, query: ListDonationsQuery) {
+  async list(
+    organizationId: string,
+    query: ListDonationsQuery,
+    scopeDepartmentId?: string,
+  ) {
+    const departmentId = scopeDepartmentId ?? query.departmentId;
+    let receiverIdsForDept: string[] | undefined;
+    if (departmentId) {
+      const assignments = await this.prisma.userDepartmentRole.findMany({
+        where: {
+          departmentId,
+          deletedAt: null,
+          user: { organizationId, deletedAt: null },
+        },
+        select: { userId: true },
+      });
+      receiverIdsForDept = [...new Set(assignments.map((a) => a.userId))];
+    }
+
     const where: Prisma.DonationWhereInput = {
       organizationId,
       deletedAt: null,
+      ...(receiverIdsForDept !== undefined
+        ? {
+            receivedById: receiverIdsForDept.length
+              ? { in: receiverIdsForDept }
+              : { in: ['00000000-0000-0000-0000-000000000000'] },
+          }
+        : {}),
       ...(query.kind ? { kind: query.kind } : {}),
       ...(query.campaignIds?.length
         ? { campaignId: { in: query.campaignIds } }
@@ -141,6 +167,7 @@ export class DonationService {
           spendCategory: true,
           isAnonymous: true,
           donorNameSnapshot: true,
+          receivedById: true,
           notesEnc: true,
           campaign: { select: { name: true } },
           bills: {
@@ -153,31 +180,56 @@ export class DonationService {
       }),
     ]);
 
-    const items = rows.map((d) => ({
-      id: d.id,
-      kind: d.kind,
-      amountMinor: Number(d.amountMinor),
-      currency: d.currency,
-      receivedAt: d.receivedAt,
-      donorId: d.donorId,
-      campaignId: d.campaignId,
-      campaignName: d.campaign?.name ?? null,
-      occasionId: d.occasionId,
-      spendCategory: d.spendCategory,
-      isAnonymous: d.isAnonymous,
-      donorNameSnapshot: d.donorNameSnapshot,
-      notes: d.notesEnc
-        ? this.enc.decryptToString(d.notesEnc, organizationId, 'notes')
+    const receiverIds = [
+      ...new Set(rows.map((r) => r.receivedById).filter((id): id is string => !!id)),
+    ];
+    const deptByReceiver = new Map<string, { id: string; name: string }>();
+    if (receiverIds.length > 0) {
+      const assignments = await this.prisma.userDepartmentRole.findMany({
+        where: { userId: { in: receiverIds }, deletedAt: null },
+        orderBy: { createdAt: 'asc' },
+        select: {
+          userId: true,
+          department: { select: { id: true, name: true } },
+        },
+      });
+      for (const a of assignments) {
+        if (!deptByReceiver.has(a.userId)) {
+          deptByReceiver.set(a.userId, a.department);
+        }
+      }
+    }
+
+    const items = rows.map((row) => {
+      const dept = row.receivedById ? (deptByReceiver.get(row.receivedById) ?? null) : null;
+      return {
+      id: row.id,
+      kind: row.kind,
+      amountMinor: Number(row.amountMinor),
+      currency: row.currency,
+      receivedAt: row.receivedAt,
+      donorId: row.donorId,
+      campaignId: row.campaignId,
+      campaignName: row.campaign?.name ?? null,
+      occasionId: row.occasionId,
+      spendCategory: row.spendCategory,
+      isAnonymous: row.isAnonymous,
+      donorNameSnapshot: row.donorNameSnapshot,
+      departmentId: dept?.id ?? null,
+      departmentName: dept?.name ?? null,
+      notes: row.notesEnc
+        ? this.enc.decryptToString(row.notesEnc, organizationId, 'notes')
         : null,
-      receiptBill: d.bills[0]
+      receiptBill: row.bills[0]
         ? {
-            id: d.bills[0].id,
-            number: d.bills[0].number,
-            series: d.bills[0].series,
-            yearIssued: d.bills[0].yearIssued,
+            id: row.bills[0].id,
+            number: row.bills[0].number,
+            series: row.bills[0].series,
+            yearIssued: row.bills[0].yearIssued,
           }
         : null,
-    }));
+      };
+    });
 
     return { total, items, limit: query.limit, offset: query.offset };
   }
@@ -245,8 +297,49 @@ export class DonationService {
         });
       }
 
-      return donation;
+      return {
+        id: donation.id,
+        kind: donation.kind,
+        amountMinor: Number(donation.amountMinor),
+        currency: donation.currency,
+        receivedAt: donation.receivedAt.toISOString(),
+        campaignId: donation.campaignId,
+        spendCategory: donation.spendCategory,
+      };
     });
+  }
+
+  async listByCampaign(organizationId: string, campaignId: string, limit = 50) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId, organizationId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    const rows = await this.prisma.donation.findMany({
+      where: { organizationId, campaignId, deletedAt: null },
+      orderBy: { receivedAt: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        kind: true,
+        amountMinor: true,
+        currency: true,
+        receivedAt: true,
+        isAnonymous: true,
+        donorNameSnapshot: true,
+        spendCategory: true,
+      },
+    });
+
+    return {
+      campaign,
+      items: rows.map((d) => ({
+        ...d,
+        amountMinor: Number(d.amountMinor),
+        receivedAt: d.receivedAt.toISOString(),
+      })),
+    };
   }
 
   async createInKind(organizationId: string, receivedById: string | null, dto: CreateInKindDonationDto) {

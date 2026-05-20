@@ -36,6 +36,13 @@ const PERMISSIONS: PermDef[] = [
   { code: 'platform.org.suspend', resource: 'platform', action: 'org.suspend', description: 'Suspend or reactivate an organization', dangerous: true },
   { code: 'platform.org.delete', resource: 'platform', action: 'org.delete', description: 'Permanently delete an organization', dangerous: true },
   { code: 'platform.user.impersonate', resource: 'platform', action: 'user.impersonate', description: 'Impersonate a user (audited)', dangerous: true },
+  {
+    code: 'platform.org.admin.reset_password',
+    resource: 'platform',
+    action: 'org.admin.reset_password',
+    description: 'Reset an organization admin password (forgotten password recovery)',
+    dangerous: true,
+  },
 
   // tenant
   { code: 'org.read', resource: 'org', action: 'read', description: 'Read organization profile' },

@@ -10,6 +10,7 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { CampaignService } from './campaign.service';
+import { DonationService } from '../donation/donation.service';
 import {
   createCampaignSchema,
   createOccasionSchema,
@@ -32,7 +33,10 @@ import { AuditInterceptor } from '../../common/interceptors/audit.interceptor';
 @UseGuards(JwtAuthGuard, AuthorizationGuard)
 @UseInterceptors(AuditInterceptor)
 export class CampaignController {
-  constructor(private readonly service: CampaignService) {}
+  constructor(
+    private readonly service: CampaignService,
+    private readonly donations: DonationService,
+  ) {}
 
   // ---------- Campaigns ----------
   @Get('campaigns')
@@ -45,6 +49,12 @@ export class CampaignController {
   @RequirePerm('campaign.read')
   getCampaign(@CurrentOrg() orgId: string, @Param('id') id: string) {
     return this.service.getCampaign(orgId, id);
+  }
+
+  @Get('campaigns/:id/donations')
+  @RequirePerm({ permissions: ['campaign.read', 'donor.read'], mode: 'any' })
+  listCampaignDonations(@CurrentOrg() orgId: string, @Param('id') id: string) {
+    return this.donations.listByCampaign(orgId, id);
   }
 
   @Post('campaigns')

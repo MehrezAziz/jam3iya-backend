@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalCinSchema, requiredCinSchema } from '../../common/validators/cin';
 
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -10,7 +11,7 @@ export const createBeneficiarySchema = z.object({
   maritalStatus: z
     .enum(['single', 'married', 'divorced', 'widowed', 'separated'])
     .default('single'),
-  cin: z.string().regex(/^\d{8}$/).optional(),
+  cin: optionalCinSchema,
   phone: z.string().max(40).optional(),
   address: z.string().max(500).optional(),
   region: z.string().max(120).optional(),
@@ -40,6 +41,7 @@ export const listBeneficiariesQuerySchema = z.object({
     .enum(['draft', 'pending_review', 'active', 'on_hold', 'archived'])
     .optional(),
   region: z.string().max(120).optional(),
+  departmentId: z.string().uuid().optional(),
   limit: z.coerce.number().min(1).max(200).default(50),
   offset: z.coerce.number().min(0).default(0),
 });
@@ -52,7 +54,7 @@ export const upsertSpouseSchema = z.object({
   lastName: z.string().min(1).max(200),
   gender: z.enum(['male', 'female']),
   dateOfBirth: dateString.optional(),
-  cin: z.string().regex(/^\d{8}$/),
+  cin: requiredCinSchema,
   phone: z.string().max(40).optional(),
   hasJob: z.boolean().optional().default(false),
   notes: z.string().max(2000).optional(),
@@ -86,7 +88,7 @@ export const upsertDependentSchema = z.object({
   lastName: z.string().min(1).max(200),
   gender: z.enum(['male', 'female']),
   dateOfBirth: dateString.optional(),
-  cin: z.string().regex(/^\d{8}$/).optional(),
+  cin: optionalCinSchema,
   phone: z.string().max(40).optional(),
   notes: z.string().max(2000).optional(),
 });

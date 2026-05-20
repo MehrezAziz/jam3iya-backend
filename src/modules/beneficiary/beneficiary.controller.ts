@@ -90,8 +90,12 @@ export class BeneficiaryController {
   @AuditAction({ action: 'beneficiary.create', resourceType: 'beneficiary', captureDiff: true })
   create(
     @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createBeneficiarySchema)) dto: CreateBeneficiaryDto,
   ) {
+    if (user.departmentId) {
+      dto.departmentId = user.departmentId;
+    }
     return this.service.create(orgId, dto);
   }
 

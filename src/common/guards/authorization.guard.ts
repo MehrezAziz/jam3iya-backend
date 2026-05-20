@@ -4,6 +4,7 @@ import {
   REQUIRE_PERM_KEY,
   RequirePermOptions,
 } from '../decorators/require-perm.decorator';
+import { IS_PUBLIC_KEY } from '../decorators/public.decorator';
 import { AuthorizationService } from '../../modules/authz/authorization.service';
 import { BeneficiaryAccessService } from '../../modules/tenancy/beneficiary-access.service';
 import type { AuthorizedRequest } from '../types/request-context';
@@ -19,6 +20,12 @@ export class AuthorizationGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    if (isPublic) return true;
+
     const required = this.reflector.getAllAndOverride<RequirePermOptions>(REQUIRE_PERM_KEY, [
       context.getHandler(),
       context.getClass(),

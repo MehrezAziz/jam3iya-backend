@@ -449,6 +449,8 @@ model Department {
   description        String?
   loginCode          String? // unique per org; used with org slug for department login
   passwordHash       String?
+  region             String? // governorate name (Tunisia reference)
+  city               String? // delegation / city name
   isMain             Boolean   @default(false)
   createdAt          DateTime  @default(now()) @db.Timestamptz
   updatedAt          DateTime  @updatedAt @db.Timestamptz
