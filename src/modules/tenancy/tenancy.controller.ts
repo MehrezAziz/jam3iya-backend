@@ -1,7 +1,24 @@
-import { Body, Controller, Get, Param, Post, Put, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  NotFoundException,
+  Param,
+  Post,
+  Put,
+  Res,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { TenancyService } from './tenancy.service';
 import { BeneficiaryAccessService } from './beneficiary-access.service';
+import { FilesService } from '../files/files.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { AuthorizationGuard } from '../../common/guards/authorization.guard';
 import { RequirePerm } from '../../common/decorators/require-perm.decorator';
@@ -54,6 +71,7 @@ export class TenancyController {
   constructor(
     private readonly tenancy: TenancyService,
     private readonly beneficiaryAccess: BeneficiaryAccessService,
+    private readonly files: FilesService,
   ) {}
 
   @Public()
@@ -75,6 +93,41 @@ export class TenancyController {
   @RequirePerm('org.read')
   myOrg(@CurrentOrg() orgId: string) {
     return this.tenancy.getOrganization(orgId);
+  }
+
+  @UseGuards(JwtAuthGuard, AuthorizationGuard)
+  @Get('organizations/me/logo')
+  @RequirePerm({ permissions: ['org.read', 'bill.read'], mode: 'any' })
+  async getOrganizationLogo(@CurrentOrg() orgId: string, @Res({ passthrough: true }) res: Response) {
+    const org = await this.tenancy.downloadOrganizationLogo(orgId);
+    if (!org?.logoFileId) throw new NotFoundException('Organization logo not set');
+    const streamable = await this.files.downloadFile(orgId, org.logoFileId);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    return streamable;
+  }
+
+  @UseGuards(JwtAuthGuard, AuthorizationGuard)
+  @Put('organizations/me/logo')
+  @RequirePerm('org.manage_settings')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: memoryStorage(),
+      limits: { fileSize: 2 * 1024 * 1024 },
+    }),
+  )
+  setOrganizationLogo(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @UploadedFile() file: { buffer: Buffer; mimetype: string; size: number; originalname: string },
+  ) {
+    return this.tenancy.setOrganizationLogo(orgId, user.userId, file);
+  }
+
+  @UseGuards(JwtAuthGuard, AuthorizationGuard)
+  @Delete('organizations/me/logo')
+  @RequirePerm('org.manage_settings')
+  clearOrganizationLogo(@CurrentOrg() orgId: string) {
+    return this.tenancy.clearOrganizationLogo(orgId);
   }
 
   @UseGuards(JwtAuthGuard, AuthorizationGuard)

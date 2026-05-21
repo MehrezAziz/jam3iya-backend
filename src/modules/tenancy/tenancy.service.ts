@@ -6,10 +6,15 @@ import {
 } from '@nestjs/common';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { FilesService } from '../files/files.service';
+import { calendarDateToday } from '../../common/utils/calendar-date';
 
 @Injectable()
 export class TenancyService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly files: FilesService,
+  ) {}
 
   getOrganization(organizationId: string) {
     return this.prisma.organization.findUnique({
@@ -28,7 +33,36 @@ export class TenancyService {
         publicPageEnabled: true,
         publicPageConfig: true,
         defaultBillSeries: true,
+        logoFileId: true,
       },
+    });
+  }
+
+  async setOrganizationLogo(
+    organizationId: string,
+    userId: string,
+    file: { buffer: Buffer; mimetype: string; size: number; originalname: string },
+  ) {
+    const uploaded = await this.files.uploadOrganizationLogo(organizationId, userId, file);
+    await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: { logoFileId: uploaded.id },
+    });
+    return { logoFileId: uploaded.id, mime: uploaded.mime, size: uploaded.size };
+  }
+
+  async clearOrganizationLogo(organizationId: string) {
+    await this.prisma.organization.update({
+      where: { id: organizationId },
+      data: { logoFileId: null },
+    });
+    return { ok: true as const };
+  }
+
+  downloadOrganizationLogo(organizationId: string) {
+    return this.prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { logoFileId: true },
     });
   }
 
@@ -207,6 +241,17 @@ export class TenancyService {
   async getPublicStats(organizationId: string) {
     const now = new Date();
     const startOfYear = new Date(now.getFullYear(), 0, 1);
+    const endOfToday = calendarDateToday();
+    endOfToday.setUTCHours(23, 59, 59, 999);
+    await this.prisma.campaign.updateMany({
+      where: {
+        organizationId,
+        deletedAt: null,
+        state: 'draft',
+        startsAt: { lte: endOfToday },
+      },
+      data: { state: 'active' },
+    });
 
     const [donations, distributions, beneficiaries, campaigns] = await Promise.all([
       this.prisma.donation.aggregate({

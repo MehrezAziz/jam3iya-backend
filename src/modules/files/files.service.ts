@@ -10,7 +10,9 @@ import type { Env } from '../../config/env';
 import type { DocumentCategory, DocumentOwnerType } from '@prisma/client';
 
 const ALLOWED_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+const LOGO_MIME = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_BYTES = 10 * 1024 * 1024;
+const LOGO_MAX_BYTES = 2 * 1024 * 1024;
 
 @Injectable()
 export class FilesService {
@@ -59,6 +61,19 @@ export class FilesService {
     });
 
     return { ...stored, size: Number(stored.size) };
+  }
+
+  async uploadOrganizationLogo(
+    organizationId: string,
+    uploadedById: string | null,
+    file: { buffer: Buffer; mimetype: string; size: number; originalname: string },
+  ) {
+    if (!file?.buffer?.length) throw new BadRequestException('No file provided');
+    if (file.size > LOGO_MAX_BYTES) throw new BadRequestException('Logo too large (max 2 MB)');
+    if (!LOGO_MIME.has(file.mimetype)) {
+      throw new BadRequestException('Logo must be JPEG, PNG, or WebP');
+    }
+    return this.upload(organizationId, uploadedById, file);
   }
 
   private async assertOwnerInOrg(

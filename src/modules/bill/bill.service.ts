@@ -82,7 +82,9 @@ export class BillService {
         recipientType: true,
         recipientSnapshot: true,
         linkedDonationId: true,
-        organization: { select: { legalName: true, fiscalId: true, address: true, phone: true } },
+        organization: {
+          select: { legalName: true, fiscalId: true, address: true, phone: true, logoFileId: true },
+        },
         linkedDonation: {
           select: {
             id: true,

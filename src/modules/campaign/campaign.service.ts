@@ -1,5 +1,6 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { calendarDateToday, isStartOnOrBeforeToday } from '../../common/utils/calendar-date';
 import type {
   CreateCampaignDto,
   CreateOccasionDto,
@@ -8,11 +9,38 @@ import type {
 } from './dto';
 
 @Injectable()
-export class CampaignService {
+export class CampaignService implements OnModuleInit {
+  private readonly logger = new Logger(CampaignService.name);
+
   constructor(private readonly prisma: PrismaService) {}
+
+  onModuleInit(): void {
+    void this.activateDueCampaigns();
+    setInterval(() => void this.activateDueCampaigns(), 60 * 60 * 1000);
+  }
+
+  /** Draft campaigns whose start date has arrived become active. */
+  async activateDueCampaigns(organizationId?: string): Promise<number> {
+    const endOfToday = calendarDateToday();
+    endOfToday.setUTCHours(23, 59, 59, 999);
+    const result = await this.prisma.campaign.updateMany({
+      where: {
+        deletedAt: null,
+        state: 'draft',
+        ...(organizationId ? { organizationId } : {}),
+        startsAt: { lte: endOfToday },
+      },
+      data: { state: 'active' },
+    });
+    if (result.count > 0) {
+      this.logger.log(`Activated ${result.count} campaign(s) whose start date was reached`);
+    }
+    return result.count;
+  }
 
   // ---------- Campaigns ----------
   async listCampaigns(organizationId: string) {
+    await this.activateDueCampaigns(organizationId);
     const items = await this.prisma.campaign.findMany({
       where: { organizationId, deletedAt: null },
       orderBy: [{ state: 'asc' }, { startsAt: 'desc' }],
@@ -41,6 +69,7 @@ export class CampaignService {
   }
 
   async getCampaign(organizationId: string, id: string) {
+    await this.activateDueCampaigns(organizationId);
     const c = await this.prisma.campaign.findFirst({
       where: { id, organizationId, deletedAt: null },
       include: { occasion: { select: { name: true, isHijriBased: true } } },
@@ -69,6 +98,8 @@ export class CampaignService {
       if (!occ) throw new NotFoundException('Occasion not found');
     }
 
+    const state = dto.state ?? (isStartOnOrBeforeToday(dto.startsAt) ? 'active' : 'draft');
+
     return this.prisma.campaign.create({
       data: {
         organizationId,
@@ -80,7 +111,7 @@ export class CampaignService {
         targetAmountMinor: dto.targetAmountMinor != null ? BigInt(dto.targetAmountMinor) : null,
         currency: (dto.currency ?? 'TND').toUpperCase(),
         visibleOnPublicPage: dto.visibleOnPublicPage ?? true,
-        state: dto.state ?? 'draft',
+        state,
       },
       select: { id: true },
     });
