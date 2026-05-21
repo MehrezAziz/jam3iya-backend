@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-echo "Running database migrations..."
+echo "Running database migrations (first run can take several minutes)..."
 npx prisma migrate deploy
-echo "Starting API..."
+echo "Migrations finished. Starting API..."
 exec node dist/main.js
