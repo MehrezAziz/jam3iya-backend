@@ -149,6 +149,13 @@ export class AuthController {
   // -----------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------
+  /** Omit Domain attribute when COOKIE_DOMAIN is `host` / `auto` / empty (host-only cookies). */
+  private cookieDomainOption(): string | undefined {
+    const domain = this.config.get('COOKIE_DOMAIN', { infer: true }).trim();
+    if (!domain || domain === 'host' || domain === 'auto') return undefined;
+    return domain;
+  }
+
   private setAuthCookies(
     res: Response,
     accessToken: string,
@@ -157,28 +164,23 @@ export class AuthController {
     refreshMaxAgeSec: number,
   ): void {
     const secure = this.config.get('COOKIE_SECURE', { infer: true });
-    const domain = this.config.get('COOKIE_DOMAIN', { infer: true });
-    res.cookie('access_token', accessToken, {
+    const domain = this.cookieDomainOption();
+    const base = {
       httpOnly: true,
       secure,
-      sameSite: 'lax',
-      domain,
-      maxAge: accessMaxAgeSec * 1000,
+      sameSite: 'lax' as const,
+      maxAge: 0,
       path: '/',
-    });
-    res.cookie('refresh_token', refreshToken, {
-      httpOnly: true,
-      secure,
-      sameSite: 'lax',
-      domain,
-      maxAge: refreshMaxAgeSec * 1000,
-      path: '/',
-    });
+      ...(domain ? { domain } : {}),
+    };
+    res.cookie('access_token', accessToken, { ...base, maxAge: accessMaxAgeSec * 1000 });
+    res.cookie('refresh_token', refreshToken, { ...base, maxAge: refreshMaxAgeSec * 1000 });
   }
 
   private clearAuthCookies(res: Response): void {
-    const domain = this.config.get('COOKIE_DOMAIN', { infer: true });
-    res.clearCookie('access_token', { path: '/', domain });
-    res.clearCookie('refresh_token', { path: '/', domain });
+    const domain = this.cookieDomainOption();
+    const base = { path: '/', ...(domain ? { domain } : {}) };
+    res.clearCookie('access_token', base);
+    res.clearCookie('refresh_token', base);
   }
 }
