@@ -100,6 +100,14 @@ export class DistributionService {
     });
     if (!ben) throw new NotFoundException('Beneficiary not found in this organization');
 
+    if (dto.campaignId) {
+      await this.validateCampaignForSpend(organizationId, dto.campaignId);
+      const cashTotal = this.sumCashMinorFromInputs(dto.lines);
+      if (cashTotal > 0n) {
+        await this.assertCampaignHasBalance(this.prisma, organizationId, dto.campaignId, cashTotal);
+      }
+    }
+
     // Validate that the requested kind matches the lines
     this.validateKindMatchesLines(dto.kind, dto.lines);
 
@@ -177,7 +185,17 @@ export class DistributionService {
     distributionId: string,
     signatureFileId?: string,
   ): Promise<void> {
+    const dist = await tx.distribution.findFirst({
+      where: { id: distributionId, organizationId },
+      select: { campaignId: true },
+    });
+    if (!dist) throw new NotFoundException('Distribution not found');
+
     const lines = await tx.distributionLine.findMany({ where: { distributionId } });
+    const cashTotal = this.sumCashMinorFromDbLines(lines);
+    if (dist.campaignId && cashTotal > 0n) {
+      await this.assertCampaignHasBalance(tx, organizationId, dist.campaignId, cashTotal);
+    }
 
     for (const line of lines.filter((l) => l.lineKind === 'item')) {
       if (!line.itemId || line.quantity == null) continue;
@@ -241,6 +259,13 @@ export class DistributionService {
         signatureFileId: signatureFileId ?? null,
       },
     });
+
+    if (dist.campaignId && cashTotal > 0n) {
+      await tx.campaign.update({
+        where: { id: dist.campaignId },
+        data: { distributedAmountMinor: { increment: cashTotal } },
+      });
+    }
   }
 
   async deliver(organizationId: string, performedById: string, id: string, dto: DeliverDistributionDto) {
@@ -251,6 +276,12 @@ export class DistributionService {
     if (!dist) throw new NotFoundException('Distribution not found');
     if (dist.status === 'delivered') throw new BadRequestException('Already delivered');
     if (dist.status === 'cancelled') throw new BadRequestException('Distribution is cancelled');
+
+    const cashTotal = this.sumCashMinorFromDbLines(dist.lines);
+    if (dist.campaignId && cashTotal > 0n) {
+      await this.validateCampaignForSpend(organizationId, dist.campaignId);
+      await this.assertCampaignHasBalance(this.prisma, organizationId, dist.campaignId, cashTotal);
+    }
 
     return this.prisma.$transaction(async (tx) => {
       // Deduct stock FIFO for every item line
@@ -318,6 +349,14 @@ export class DistributionService {
         },
         select: { id: true, status: true, deliveredAt: true },
       });
+
+      if (dist.campaignId && cashTotal > 0n) {
+        await tx.campaign.update({
+          where: { id: dist.campaignId },
+          data: { distributedAmountMinor: { increment: cashTotal } },
+        });
+      }
+
       return updated;
     });
   }
@@ -396,6 +435,57 @@ export class DistributionService {
       data: { status: 'cancelled', cancelledAt: new Date(), cancelledReason: dto.reason },
       select: { id: true, status: true },
     });
+  }
+
+  private sumCashMinorFromInputs(lines: DistributionLineInput[]): bigint {
+    return lines
+      .filter((l): l is Extract<DistributionLineInput, { lineKind: 'cash' }> => l.lineKind === 'cash')
+      .reduce((sum, l) => sum + BigInt(l.amountMinor), 0n);
+  }
+
+  private sumCashMinorFromDbLines(
+    lines: Array<{ lineKind: string; amountMinor: bigint | null }>,
+  ): bigint {
+    return lines
+      .filter((l) => l.lineKind === 'cash' && l.amountMinor != null)
+      .reduce((sum, l) => sum + (l.amountMinor ?? 0n), 0n);
+  }
+
+  private async validateCampaignForSpend(organizationId: string, campaignId: string) {
+    const campaign = await this.prisma.campaign.findFirst({
+      where: { id: campaignId, organizationId, deletedAt: null },
+      select: { state: true },
+    });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+    if (campaign.state === 'closed') {
+      throw new BadRequestException('Cannot spend from a closed campaign');
+    }
+  }
+
+  private async assertCampaignHasBalance(
+    db: PrismaService | Prisma.TransactionClient,
+    organizationId: string,
+    campaignId: string,
+    amountMinor: bigint,
+  ) {
+    const campaign = await db.campaign.findFirst({
+      where: { id: campaignId, organizationId, deletedAt: null },
+      select: {
+        name: true,
+        collectedAmountMinor: true,
+        distributedAmountMinor: true,
+        currency: true,
+      },
+    });
+    if (!campaign) throw new NotFoundException('Campaign not found');
+    const available = campaign.collectedAmountMinor - campaign.distributedAmountMinor;
+    if (available < amountMinor) {
+      const availTnd = Number(available) / 1000;
+      const needTnd = Number(amountMinor) / 1000;
+      throw new BadRequestException(
+        `Insufficient campaign balance for "${campaign.name}". Available: ${availTnd} ${campaign.currency}, requested: ${needTnd} ${campaign.currency}`,
+      );
+    }
   }
 
   private validateKindMatchesLines(
