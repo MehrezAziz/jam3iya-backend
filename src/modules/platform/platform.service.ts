@@ -14,6 +14,7 @@ import type {
   CreateOrganizationDto,
   SuspendOrganizationDto,
   UpdateOrganizationDto,
+  UpdateOrgAdminDto,
 } from './dto';
 
 const PLATFORM_SLUG = '__platform__';
@@ -94,6 +95,7 @@ export class PlatformService {
         email: true,
         fullName: true,
         phone: true,
+        locale: true,
         status: true,
         mustChangePassword: true,
         lastLoginAt: true,
@@ -128,11 +130,125 @@ export class PlatformService {
         email: a.email,
         fullName: a.fullName,
         phone: a.phone,
+        locale: a.locale as 'ar' | 'fr' | 'en',
         status: a.status,
         mustChangePassword: a.mustChangePassword,
         lastLoginAt: a.lastLoginAt?.toISOString() ?? null,
       })),
     };
+  }
+
+  async updateOrgAdmin(
+    actorUserId: string,
+    organizationId: string,
+    userId: string,
+    dto: UpdateOrgAdminDto,
+  ): Promise<{
+    id: string;
+    email: string;
+    fullName: string;
+    phone: string | null;
+    status: string;
+    mustChangePassword: boolean;
+    lastLoginAt: string | null;
+    oneTimePassword: string | null;
+  }> {
+    const org = await this.prisma.organization.findUnique({ where: { id: organizationId } });
+    if (!org || org.deletedAt) throw new NotFoundException('Organization not found');
+    if (org.slug === PLATFORM_SLUG) {
+      throw new BadRequestException('Cannot update platform organization users here');
+    }
+
+    const admin = await this.prisma.user.findFirst({
+      where: {
+        id: userId,
+        organizationId,
+        deletedAt: null,
+        kind: 'staff',
+        departmentRoles: {
+          some: {
+            deletedAt: null,
+            role: { name: ORG_ADMIN_ROLE, isSystem: true, deletedAt: null },
+          },
+        },
+      },
+    });
+    if (!admin) throw new NotFoundException('Organization admin user not found');
+
+    let oneTimePassword: string | null = null;
+    let passwordHash: string | undefined;
+    let mustChangePassword: boolean | undefined;
+
+    if (dto.newPassword) {
+      passwordHash = await argon2.hash(dto.newPassword, { type: argon2.argon2id });
+      mustChangePassword = false;
+    }
+
+    try {
+      const updated = await this.prisma.$transaction(async (tx) => {
+        const user = await tx.user.update({
+          where: { id: userId },
+          data: {
+            ...(dto.email !== undefined ? { email: dto.email.toLowerCase() } : {}),
+            ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+            ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+            ...(dto.locale !== undefined ? { locale: dto.locale } : {}),
+            ...(passwordHash
+              ? {
+                  passwordHash,
+                  mustChangePassword: false,
+                  lastPasswordChangeAt: new Date(),
+                  failedLoginCount: 0,
+                  lockedUntil: null,
+                }
+              : {}),
+          },
+        });
+        if (passwordHash) {
+          await tx.userSession.updateMany({
+            where: { userId, revokedAt: null },
+            data: { revokedAt: new Date(), revokedReason: 'credentials_updated_by_platform' },
+          });
+        }
+        return user;
+      });
+
+      await this.audit.log({
+        organizationId: null,
+        actorUserId,
+        action: 'platform.org.admin.update',
+        resourceType: 'user',
+        resourceId: userId,
+        outcome: 'allow',
+        before: {
+          email: admin.email,
+          fullName: admin.fullName,
+          phone: admin.phone,
+        },
+        after: {
+          email: updated.email,
+          fullName: updated.fullName,
+          phone: updated.phone,
+          passwordChanged: !!dto.newPassword,
+        },
+      });
+
+      return {
+        id: updated.id,
+        email: updated.email,
+        fullName: updated.fullName,
+        phone: updated.phone,
+        status: updated.status,
+        mustChangePassword: updated.mustChangePassword,
+        lastLoginAt: updated.lastLoginAt?.toISOString() ?? null,
+        oneTimePassword,
+      };
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        throw new ConflictException('Admin email already in use in this organization');
+      }
+      throw err;
+    }
   }
 
   async resetOrgAdminPassword(
@@ -461,6 +577,7 @@ export interface OrganizationDetail extends OrganizationSummary {
     email: string;
     fullName: string;
     phone: string | null;
+    locale: 'ar' | 'fr' | 'en';
     status: string;
     mustChangePassword: boolean;
     lastLoginAt: string | null;

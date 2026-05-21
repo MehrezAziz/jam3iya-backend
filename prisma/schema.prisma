@@ -1554,7 +1554,7 @@ model Campaign {
   description            String?
   occasionId             String?       @db.Uuid
   startsAt               DateTime      @db.Date
-  endsAt                 DateTime      @db.Date
+  endsAt                 DateTime?     @db.Date
   targetAmountMinor      BigInt?
   collectedAmountMinor   BigInt        @default(0)
   distributedAmountMinor BigInt        @default(0)

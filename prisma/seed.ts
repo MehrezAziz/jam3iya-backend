@@ -1,14 +1,21 @@
 /**
- * Seeds the platform with:
- *   - the permission catalog (incl. platform.* perms)
- *   - default system roles (platform_admin, org_admin, dept_admin, employee, …)
- *   - a hidden "__platform__" organization that hosts the super admin
- *   - one platform super admin: root@platform.local / RootPlatformPass123!
- *     (login org slug: "__platform__")
+ * Idempotent catalog seed (safe to re-run on production VPS):
+ *   - permission catalog (incl. new platform.* perms)
+ *   - system roles + role↔permission links
+ *   - hidden "__platform__" org + Platform department
  *
- * Does not create demo organizations or users. Create charities via the platform UI.
+ * Platform super-admin account:
+ *   - Created ONLY when no platform_admin user exists yet.
+ *   - NEVER overwrites an existing admin email or password on re-seed.
+ *   - Credentials come from env (never commit real passwords to git):
+ *       SEED_PLATFORM_ADMIN_EMAIL
+ *       SEED_PLATFORM_ADMIN_PASSWORD  (min 12 chars)
+ *       SEED_PLATFORM_ADMIN_NAME      (optional)
+ *   - Local dev fallback (non-production only): root@platform.local / RootPlatformPass123!
  *
- * Run with: npm run db:seed
+ * Production: leave SEED_* unset after first bootstrap; re-run seed anytime for new permissions.
+ *
+ * Run: npm run db:seed  |  deploy/run-seed.sh (VPS)
  */
 import { PrismaClient } from '@prisma/client';
 import * as argon2 from 'argon2';
@@ -39,6 +46,13 @@ const PERMISSIONS: PermDef[] = [
     resource: 'platform',
     action: 'org.admin.reset_password',
     description: 'Reset an organization admin password (forgotten password recovery)',
+    dangerous: true,
+  },
+  {
+    code: 'platform.org.admin.update',
+    resource: 'platform',
+    action: 'org.admin.update',
+    description: 'Update organization admin profile and login credentials',
     dangerous: true,
   },
 
@@ -320,7 +334,7 @@ async function main(): Promise<void> {
     console.log(`  Role ${r.name}: ${perms.length} permissions`);
   }
 
-  console.log('Seeding platform super admin...');
+  console.log('Seeding platform org & admin bootstrap...');
   const platformOrg = await prisma.organization.upsert({
     where: { slug: PLATFORM_ORG_SLUG },
     create: {
@@ -347,41 +361,125 @@ async function main(): Promise<void> {
   const platformRole = await prisma.role.findFirst({ where: { name: PLATFORM_ADMIN_ROLE, isSystem: true } });
   if (!platformRole) throw new Error('platform_admin role missing after seeding roles');
 
-  const rootEmail = 'root@platform.local';
-  const rootPassword = 'RootPlatformPass123!';
-  const rootHash = await argon2.hash(rootPassword, { type: argon2.argon2id });
-  const rootUser = await prisma.user.upsert({
-    where: { organizationId_email: { organizationId: platformOrg.id, email: rootEmail } },
+  await ensurePlatformAdmin(platformOrg.id, platformDept.id, platformRole.id);
+
+  console.log('Done.');
+  console.log(`Platform login slug: ${PLATFORM_ORG_SLUG}`);
+  console.log('Create organizations at /platform/organizations/new after login.');
+}
+
+/** Existing production admin — never touch password or email. */
+async function findExistingPlatformAdmin(organizationId: string) {
+  return prisma.user.findFirst({
+    where: {
+      organizationId,
+      deletedAt: null,
+      kind: 'staff',
+      departmentRoles: {
+        some: {
+          deletedAt: null,
+          role: { name: PLATFORM_ADMIN_ROLE, isSystem: true, deletedAt: null },
+        },
+      },
+    },
+    select: { id: true, email: true },
+  });
+}
+
+function resolveBootstrapCredentials(): { email: string; password: string; fullName: string } | null {
+  const envEmail = process.env.SEED_PLATFORM_ADMIN_EMAIL?.trim().toLowerCase();
+  const envPassword = process.env.SEED_PLATFORM_ADMIN_PASSWORD;
+  const envName = process.env.SEED_PLATFORM_ADMIN_NAME?.trim();
+
+  if (envEmail && envPassword) {
+    if (envPassword.length < 12) {
+      throw new Error('SEED_PLATFORM_ADMIN_PASSWORD must be at least 12 characters');
+    }
+    return { email: envEmail, password: envPassword, fullName: envName || 'Platform Root' };
+  }
+
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd) return null;
+
+  // Local dev only — not used when NODE_ENV=production
+  return {
+    email: 'root@platform.local',
+    password: 'RootPlatformPass123!',
+    fullName: 'Platform Root',
+  };
+}
+
+async function ensurePlatformAdmin(
+  organizationId: string,
+  departmentId: string,
+  roleId: string,
+): Promise<void> {
+  const existing = await findExistingPlatformAdmin(organizationId);
+  if (existing) {
+    console.log(`  Platform admin already present (${existing.email}) — password and email left unchanged.`);
+    await prisma.userDepartmentRole.upsert({
+      where: {
+        userId_departmentId_roleId: {
+          userId: existing.id,
+          departmentId,
+          roleId,
+        },
+      },
+      create: { userId: existing.id, departmentId, roleId },
+      update: { deletedAt: null, validTo: null },
+    });
+    return;
+  }
+
+  const creds = resolveBootstrapCredentials();
+  if (!creds) {
+    console.warn(
+      '  No platform admin in database. Set SEED_PLATFORM_ADMIN_EMAIL and SEED_PLATFORM_ADMIN_PASSWORD in deploy/.env, run seed once, then remove those lines.',
+    );
+    return;
+  }
+
+  const passwordHash = await argon2.hash(creds.password, { type: argon2.argon2id });
+  const user = await prisma.user.upsert({
+    where: { organizationId_email: { organizationId, email: creds.email } },
     create: {
-      organizationId: platformOrg.id,
-      email: rootEmail,
-      fullName: 'Platform Root',
-      passwordHash: rootHash,
+      organizationId,
+      email: creds.email,
+      fullName: creds.fullName,
+      passwordHash,
       status: 'active',
       locale: 'en',
       emailVerifiedAt: new Date(),
       lastPasswordChangeAt: new Date(),
     },
-    update: { passwordHash: rootHash },
+    // User row may exist without platform_admin role — never reset password on update
+    update: {
+      fullName: creds.fullName,
+      status: 'active',
+      deletedAt: null,
+    },
   });
+
   await prisma.userDepartmentRole.upsert({
     where: {
       userId_departmentId_roleId: {
-        userId: rootUser.id,
-        departmentId: platformDept.id,
-        roleId: platformRole.id,
+        userId: user.id,
+        departmentId,
+        roleId,
       },
     },
-    create: { userId: rootUser.id, departmentId: platformDept.id, roleId: platformRole.id },
+    create: { userId: user.id, departmentId, roleId },
     update: { deletedAt: null, validTo: null },
   });
 
-  console.log('Done.');
-  console.log('Platform super admin (only account created):');
-  console.log(`  Organization slug: ${PLATFORM_ORG_SLUG}`);
-  console.log(`  Email: ${rootEmail}`);
-  console.log(`  Password: ${rootPassword}`);
-  console.log('Create organizations at /platform/organizations/new after login.');
+  console.log(`  Created platform admin: ${creds.email}`);
+  const isProd = process.env.NODE_ENV === 'production';
+  const fromEnv = !!process.env.SEED_PLATFORM_ADMIN_PASSWORD;
+  if (!isProd && !fromEnv) {
+    console.log(`  Dev password (local only): ${creds.password}`);
+  } else {
+    console.log('  Password was taken from SEED_PLATFORM_ADMIN_PASSWORD (not printed).');
+  }
 }
 
 main()

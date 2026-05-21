@@ -69,3 +69,22 @@ export const resetOrgAdminPasswordSchema = z
   })
   .strict();
 export type ResetOrgAdminPasswordDto = z.infer<typeof resetOrgAdminPasswordSchema>;
+
+export const updateOrgAdminSchema = z
+  .object({
+    email: z.string().email().max(254).optional(),
+    fullName: z.string().min(2).max(200).optional(),
+    phone: z
+      .string()
+      .max(40)
+      .optional()
+      .transform((s) => (s !== undefined ? (s.trim().length > 0 ? s.trim() : null) : undefined)),
+    locale: z.enum(['ar', 'fr', 'en']).optional(),
+    /** If omitted when only profile fields change, password is left unchanged. */
+    newPassword: z.string().min(12).max(128).optional(),
+  })
+  .strict()
+  .refine((d) => Object.values(d).some((v) => v !== undefined), {
+    message: 'At least one field must be provided',
+  });
+export type UpdateOrgAdminDto = z.infer<typeof updateOrgAdminSchema>;

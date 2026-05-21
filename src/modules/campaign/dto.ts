@@ -8,14 +8,15 @@ export const createCampaignSchema = z
     description: z.string().max(2000).optional(),
     occasionId: z.string().uuid().optional(),
     startsAt: dateString,
-    endsAt: dateString,
+    /** Omit or null for an open-ended campaign (no fixed end). */
+    endsAt: dateString.nullable().optional(),
     targetAmountMinor: z.number().int().nonnegative().optional(),
     currency: z.string().length(3).optional().default('TND'),
     visibleOnPublicPage: z.boolean().optional().default(true),
     state: z.enum(['draft', 'active', 'closed']).optional().default('draft'),
   })
   .strict()
-  .refine((data) => data.startsAt <= data.endsAt, {
+  .refine((data) => data.endsAt == null || data.startsAt <= data.endsAt, {
     message: 'startsAt must be before or equal to endsAt',
     path: ['endsAt'],
   });
@@ -27,7 +28,7 @@ export const updateCampaignSchema = z
     description: z.string().max(2000).nullable().optional(),
     occasionId: z.string().uuid().nullable().optional(),
     startsAt: dateString.optional(),
-    endsAt: dateString.optional(),
+    endsAt: dateString.nullable().optional(),
     targetAmountMinor: z.number().int().nonnegative().nullable().optional(),
     visibleOnPublicPage: z.boolean().optional(),
     state: z.enum(['draft', 'active', 'closed']).optional(),

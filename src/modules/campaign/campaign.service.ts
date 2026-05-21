@@ -76,7 +76,7 @@ export class CampaignService {
         description: dto.description,
         occasionId: dto.occasionId,
         startsAt: new Date(dto.startsAt),
-        endsAt: new Date(dto.endsAt),
+        endsAt: dto.endsAt ? new Date(dto.endsAt) : null,
         targetAmountMinor: dto.targetAmountMinor != null ? BigInt(dto.targetAmountMinor) : null,
         currency: (dto.currency ?? 'TND').toUpperCase(),
         visibleOnPublicPage: dto.visibleOnPublicPage ?? true,
@@ -107,7 +107,8 @@ export class CampaignService {
         description: dto.description,
         occasionId: dto.occasionId,
         startsAt: dto.startsAt ? new Date(dto.startsAt) : undefined,
-        endsAt: dto.endsAt ? new Date(dto.endsAt) : undefined,
+        endsAt:
+          dto.endsAt !== undefined ? (dto.endsAt ? new Date(dto.endsAt) : null) : undefined,
         targetAmountMinor:
           dto.targetAmountMinor === null
             ? null
