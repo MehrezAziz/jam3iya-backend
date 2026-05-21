@@ -67,6 +67,22 @@ export class TenancyService {
   }
 
   async getOrganizationBySlug(slug: string) {
+    const org = await this.findActiveOrganizationBySlug(slug, { requirePublicPage: true });
+    return {
+      id: org.id,
+      legalName: org.legalName,
+      slug: org.slug,
+      defaultCurrency: org.defaultCurrency,
+      defaultLanguage: org.defaultLanguage,
+      publicPageEnabled: org.publicPageEnabled,
+    };
+  }
+
+  /** Active org by slug (no public-page requirement). Used for donation verification links. */
+  async findActiveOrganizationBySlug(
+    slug: string,
+    opts?: { requirePublicPage?: boolean },
+  ) {
     if (slug.startsWith('__')) {
       throw new NotFoundException('Organization not found');
     }
@@ -76,16 +92,82 @@ export class TenancyService {
         id: true,
         legalName: true,
         slug: true,
+        fiscalId: true,
+        address: true,
+        phone: true,
+        website: true,
         defaultCurrency: true,
         defaultLanguage: true,
         publicPageEnabled: true,
         status: true,
+        logoFileId: true,
       },
     });
-    if (!org || org.status !== 'active' || !org.publicPageEnabled) {
+    if (!org || org.status !== 'active') {
+      throw new NotFoundException('Organization not found');
+    }
+    if (opts?.requirePublicPage && !org.publicPageEnabled) {
       throw new NotFoundException('Organization not found');
     }
     return org;
+  }
+
+  /**
+   * Public donation verification (receipt QR). No PII — only org branding and donation totals.
+   */
+  async getPublicDonationVerification(slug: string, donationId: string) {
+    const org = await this.findActiveOrganizationBySlug(slug);
+    const donation = await this.prisma.donation.findFirst({
+      where: {
+        id: donationId,
+        organizationId: org.id,
+        deletedAt: null,
+        cancelledAt: null,
+      },
+      select: {
+        id: true,
+        amountMinor: true,
+        currency: true,
+        receivedAt: true,
+        kind: true,
+        isAnonymous: true,
+        bills: {
+          where: { status: 'issued', deletedAt: null },
+          orderBy: { issuedAt: 'desc' },
+          take: 1,
+          select: { id: true, issuedAt: true, number: true },
+        },
+      },
+    });
+    if (!donation?.bills.length) {
+      throw new NotFoundException('Donation not found');
+    }
+    const receipt = donation.bills[0];
+    return {
+      verified: true as const,
+      organization: {
+        legalName: org.legalName,
+        slug: org.slug,
+        fiscalId: org.fiscalId,
+        address: org.address,
+        phone: org.phone,
+        website: org.website,
+        defaultCurrency: org.defaultCurrency,
+        hasLogo: !!org.logoFileId,
+      },
+      donation: {
+        id: donation.id,
+        amountMinor: Number(donation.amountMinor),
+        currency: donation.currency,
+        receivedAt: donation.receivedAt,
+        kind: donation.kind,
+        isAnonymous: donation.isAnonymous,
+      },
+      receipt: {
+        issuedAt: receipt.issuedAt,
+        number: receipt.number,
+      },
+    };
   }
 
   async listDepartments(organizationId: string) {

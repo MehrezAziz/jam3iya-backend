@@ -88,6 +88,25 @@ export class TenancyController {
     return { organization: org, ...stats };
   }
 
+  @Public()
+  @Get('public/orgs/:slug/donations/:donationId')
+  publicDonationVerification(
+    @Param('slug') slug: string,
+    @Param('donationId') donationId: string,
+  ) {
+    return this.tenancy.getPublicDonationVerification(slug, donationId);
+  }
+
+  @Public()
+  @Get('public/orgs/:slug/logo')
+  async getPublicOrganizationLogo(@Param('slug') slug: string, @Res({ passthrough: true }) res: Response) {
+    const org = await this.tenancy.findActiveOrganizationBySlug(slug);
+    if (!org.logoFileId) throw new NotFoundException('Organization logo not set');
+    const streamable = await this.files.downloadFile(org.id, org.logoFileId);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return streamable;
+  }
+
   @UseGuards(JwtAuthGuard, AuthorizationGuard)
   @Get('organizations/me')
   @RequirePerm('org.read')
