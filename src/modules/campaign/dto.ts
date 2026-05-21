@@ -41,13 +41,14 @@ export const createOccasionSchema = z
     name: z.string().min(2).max(160),
     description: z.string().max(2000).optional(),
     periodStart: dateString,
-    periodEnd: dateString,
+    /** Omit or null for an open-ended occasion (no fixed end). */
+    periodEnd: dateString.nullable().optional(),
     recurring: z.boolean().optional().default(false),
     recurringRule: z.string().max(200).optional(),
     isHijriBased: z.boolean().optional().default(false),
   })
   .strict()
-  .refine((data) => data.periodStart <= data.periodEnd, {
+  .refine((data) => data.periodEnd == null || data.periodStart <= data.periodEnd, {
     message: 'periodStart must be before or equal to periodEnd',
     path: ['periodEnd'],
   });
@@ -58,7 +59,7 @@ export const updateOccasionSchema = z
     name: z.string().min(2).max(160).optional(),
     description: z.string().max(2000).nullable().optional(),
     periodStart: dateString.optional(),
-    periodEnd: dateString.optional(),
+    periodEnd: dateString.nullable().optional(),
     recurring: z.boolean().optional(),
     recurringRule: z.string().max(200).nullable().optional(),
     isHijriBased: z.boolean().optional(),

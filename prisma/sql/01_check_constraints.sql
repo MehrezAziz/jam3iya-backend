@@ -75,7 +75,7 @@ SELECT pg_temp.add_check('expense',             'expense_amount_pos',           
 SELECT pg_temp.add_check('ledger_entry',        'ledger_amount_nonneg',         '"amountMinor" >= 0');
 
 -- Period sanity
-SELECT pg_temp.add_check('occasion',        'occasion_period',        '"periodStart" <= "periodEnd"');
+SELECT pg_temp.add_check('occasion',        'occasion_period',        '"periodEnd" IS NULL OR "periodStart" <= "periodEnd"');
 SELECT pg_temp.add_check('campaign',        'campaign_period',        '"startsAt" <= "endsAt"');
 SELECT pg_temp.add_check('volunteer_shift', 'volunteer_shift_period', '"startsAt" < "endsAt"');
 

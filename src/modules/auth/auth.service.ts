@@ -302,18 +302,19 @@ export class AuthService {
   private async findUserForLogin(identifier: string, organizationSlug?: string) {
     const trimmed = identifier.trim();
     const phoneDigits = trimmed.replace(/\D/g, '');
-    const isPhone = phoneDigits.length >= 8 && /^[\d\s+()-]+$/.test(trimmed);
+    const isPhone = phoneDigits.length === 8 && /^[\d\s+()-]+$/.test(trimmed);
 
     if (organizationSlug) {
       const org = await this.prisma.organization.findUnique({ where: { slug: organizationSlug } });
       if (!org) return null;
 
       if (isPhone) {
-        const variants = [phoneDigits, phoneDigits.length === 8 ? `216${phoneDigits}` : null].filter(
-          Boolean,
-        ) as string[];
         return this.prisma.user.findFirst({
-          where: { organizationId: org.id, phone: { in: variants }, deletedAt: null },
+          where: {
+            organizationId: org.id,
+            phone: { in: [phoneDigits, `216${phoneDigits}`] },
+            deletedAt: null,
+          },
         });
       }
 

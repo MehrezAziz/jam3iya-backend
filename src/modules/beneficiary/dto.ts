@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { optionalCinSchema, requiredCinSchema } from '../../common/validators/cin';
+import { optionalPhoneSchema } from '../../common/validators/phone';
 
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -12,7 +13,7 @@ export const createBeneficiarySchema = z.object({
     .enum(['single', 'married', 'divorced', 'widowed', 'separated'])
     .default('single'),
   cin: optionalCinSchema,
-  phone: z.string().max(40).optional(),
+  phone: optionalPhoneSchema,
   address: z.string().max(500).optional(),
   region: z.string().max(120).optional(),
   city: z.string().max(120).optional(),
@@ -55,7 +56,7 @@ export const upsertSpouseSchema = z.object({
   gender: z.enum(['male', 'female']),
   dateOfBirth: dateString.optional(),
   cin: requiredCinSchema,
-  phone: z.string().max(40).optional(),
+  phone: optionalPhoneSchema,
   hasJob: z.boolean().optional().default(false),
   notes: z.string().max(2000).optional(),
 });
@@ -89,7 +90,7 @@ export const upsertDependentSchema = z.object({
   gender: z.enum(['male', 'female']),
   dateOfBirth: dateString.optional(),
   cin: optionalCinSchema,
-  phone: z.string().max(40).optional(),
+  phone: optionalPhoneSchema,
   notes: z.string().max(2000).optional(),
 });
 export type UpsertDependentDto = z.infer<typeof upsertDependentSchema>;
@@ -137,7 +138,7 @@ export const upsertHousingSchema = z
     /** Rent in major units (TND), converted server-side. */
     rent: z.number().nonnegative().optional(),
     ownerName: z.string().max(200).optional(),
-    ownerPhone: z.string().max(40).optional(),
+    ownerPhone: optionalPhoneSchema,
     condition: z.enum(['good', 'fair', 'poor', 'unsafe']).optional().default('fair'),
     rooms: z.number().int().nonnegative().optional(),
     occupants: z.number().int().nonnegative().optional(),

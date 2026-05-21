@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { optionalPhoneSchema } from '../../common/validators/phone';
 
 export const loginSchema = z.object({
   email: z.string().email(),
@@ -20,7 +21,7 @@ export const registerDonorSchema = z.object({
   email: z.string().email(),
   password: z.string().min(12).max(200),
   fullName: z.string().min(2).max(200),
-  phone: z.string().max(40).optional(),
+  phone: optionalPhoneSchema,
   pseudo: z.string().max(80).optional(),
   acceptsTaxReceipt: z.boolean().optional(),
   fiscalId: z.string().max(80).optional(),

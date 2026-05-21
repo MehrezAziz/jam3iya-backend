@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { nullablePhoneSchema, optionalPhoneSchema } from '../../common/validators/phone';
 
 const slugRegex = /^[a-z0-9](?:[a-z0-9-]{1,48}[a-z0-9])?$/;
 
@@ -21,7 +22,7 @@ export const createOrganizationSchema = z
     admin: z.object({
       email: z.string().email().max(254),
       fullName: z.string().min(2).max(200),
-      phone: z.string().max(40).optional(),
+      phone: optionalPhoneSchema,
       locale: z.enum(['ar', 'fr', 'en']).default('ar'),
       // If omitted, a one-time password is generated and returned.
       initialPassword: z
@@ -74,11 +75,7 @@ export const updateOrgAdminSchema = z
   .object({
     email: z.string().email().max(254).optional(),
     fullName: z.string().min(2).max(200).optional(),
-    phone: z
-      .string()
-      .max(40)
-      .optional()
-      .transform((s) => (s !== undefined ? (s.trim().length > 0 ? s.trim() : null) : undefined)),
+    phone: nullablePhoneSchema,
     locale: z.enum(['ar', 'fr', 'en']).optional(),
     /** If omitted when only profile fields change, password is left unchanged. */
     newPassword: z.string().min(12).max(128).optional(),

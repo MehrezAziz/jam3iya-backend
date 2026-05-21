@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { z } from 'zod';
+import { requiredPhoneSchema } from '../../common/validators/phone';
 
 export const searchDonorsQuerySchema = z.object({
   q: z.string().min(2).max(100),
@@ -12,7 +13,7 @@ export type SearchDonorsQuery = z.infer<typeof searchDonorsQuerySchema>;
 
 export const createDonorByOrgSchema = z.object({
   fullName: z.string().min(2).max(200),
-  phone: z.string().min(8).max(40),
+  phone: requiredPhoneSchema,
   password: z.string().min(8).max(200),
   email: z.string().email().optional(),
   fiscalId: z.string().max(80).optional(),
@@ -25,7 +26,7 @@ export class DonorService {
   constructor(private readonly prisma: PrismaService) {}
 
   async createByOrganization(organizationId: string, dto: CreateDonorByOrgDto) {
-    const phone = dto.phone.replace(/\D/g, '');
+    const phone = dto.phone;
     const email =
       dto.email?.toLowerCase() ??
       `donor+${phone}@donors.${organizationId.slice(0, 8)}.local`;

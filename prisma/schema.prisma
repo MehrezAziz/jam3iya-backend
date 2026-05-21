@@ -1587,7 +1587,8 @@ model Occasion {
   description    String?
   // Period (Hijri displayed in UI; storage is Gregorian)
   periodStart    DateTime  @db.Date
-  periodEnd      DateTime  @db.Date
+  /// Null = open-ended occasion (no fixed end).
+  periodEnd      DateTime? @db.Date
   recurring      Boolean   @default(false)
   recurringRule  String? // optional RRULE
   isHijriBased   Boolean   @default(false) // hint for the UI calendar conversion

@@ -187,7 +187,7 @@ export class CampaignService implements OnModuleInit {
         name: dto.name,
         description: dto.description,
         periodStart: new Date(dto.periodStart),
-        periodEnd: new Date(dto.periodEnd),
+        periodEnd: dto.periodEnd != null ? new Date(dto.periodEnd) : null,
         recurring: dto.recurring ?? false,
         recurringRule: dto.recurringRule,
         isHijriBased: dto.isHijriBased ?? false,
@@ -207,7 +207,12 @@ export class CampaignService implements OnModuleInit {
         name: dto.name,
         description: dto.description,
         periodStart: dto.periodStart ? new Date(dto.periodStart) : undefined,
-        periodEnd: dto.periodEnd ? new Date(dto.periodEnd) : undefined,
+        periodEnd:
+          dto.periodEnd !== undefined
+            ? dto.periodEnd != null
+              ? new Date(dto.periodEnd)
+              : null
+            : undefined,
         recurring: dto.recurring,
         recurringRule: dto.recurringRule,
         isHijriBased: dto.isHijriBased,
