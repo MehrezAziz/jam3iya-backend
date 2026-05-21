@@ -1,6 +1,9 @@
 /**
- * Generates backend/prisma/sql/seed_tunisia_governorates.sql
+ * Generates backend/prisma/sql/seed_tunisia_governorates.sql (UTF-8).
  * Run: node backend/scripts/generate-geo-sql.mjs
+ *
+ * Governorate names are stored WITHOUT the word "Governorate".
+ * Delegations that duplicate the governorate name are omitted (e.g. Ben Arous).
  */
 import { writeFileSync } from 'fs';
 import { join, dirname } from 'path';
@@ -8,95 +11,317 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+/** Keys may end with " Governorate"; values are delegation/city names. */
 const DATA = {
-  'Ariana Governorate': [
-    'La Soukra', 'Mnihla', 'Raoued', 'Sidi Thabet', 'Kalâat el-Andalous',
+  Ariana: [
+    'Ettadhamen',
+    'La Soukra',
+    'Mnihla',
+    'Raoued',
+    'Sidi Thabet',
+    'Kalâat el-Andalous',
   ],
-  'Béja Governorate': [
-    'Amdoun', 'Goubellat', 'Medjez El Bab', 'Nefza', 'Téboursouk', 'Testour', 'Thibar', 'Béja Nord', 'Béja Sud',
+  Béja: [
+    'Amdoun',
+    'Goubellat',
+    'Medjez El Bab',
+    'Nefza',
+    'Téboursouk',
+    'Testour',
+    'Thibar',
+    'Béja Nord',
+    'Béja Sud',
+    'Béja',
   ],
-  'Ben Arous Governorate': [
-    'Bou Mhel el-Bassatine', 'El Mourouj', 'Ezzahra', 'Fouchana', 'Hammam Chott', 'Hammam Lif', 'Khalidia',
-    'Mégrine', 'Mohamedia', 'Mornag', 'Naassen', 'Radès',
+  'Ben Arous': [
+    'Bou Mhel el-Bassatine',
+    'El Mourouj',
+    'Ezzahra',
+    'Fouchana',
+    'Hammam Chott',
+    'Hammam Lif',
+    'Khalidia',
+    'Mégrine',
+    'Mohamedia',
+    'Mornag',
+    'Naassen',
+    'Radès',
   ],
-  'Bizerte Governorate': [
-    'Bizerte', 'El Alia', 'Ghar El Melh', 'Ghezala', 'Joumine', 'Mateur', 'Menzel Bourguiba', 'Menzel Jemil',
-    'Ras Jebel', 'Sejnane', 'Tinja', 'Utique', 'Zarzouna',
+  Bizerte: [
+    'Bizerte',
+    'El Alia',
+    'Ghar El Melh',
+    'Ghezala',
+    'Joumine',
+    'Mateur',
+    'Menzel Bourguiba',
+    'Menzel Jemil',
+    'Ras Jebel',
+    'Sejnane',
+    'Tinja',
+    'Utique',
+    'Zarzouna',
   ],
-  'Gabès Governorate': [
-    'El Hamma', 'Gabès', 'Gabès Sud', 'Ghannouch', 'Habib Thameur Bouatouch', 'Mareth', 'Matmata',
-    'Menzel El Habib', 'Métouia', 'Oudhref',
+  Gabès: [
+    'El Hamma',
+    'Gabès',
+    'Gabès Sud',
+    'Ghannouch',
+    'Habib Thameur Bouatouch',
+    'Mareth',
+    'Matmata',
+    'Menzel El Habib',
+    'Métouia',
+    'Oudhref',
   ],
-  'Gafsa Governorate': [
-    'El Guettar', 'El Ksar', 'Gafsa', 'Mdhila', 'Métlaoui', 'Moularès', 'Redeyef', 'Sened', 'Sidi Aïch',
-    'Sidi Boubaker', 'Zannouch',
+  Gafsa: [
+    'El Guettar',
+    'El Ksar',
+    'Gafsa',
+    'Mdhila',
+    'Métlaoui',
+    'Moularès',
+    'Redeyef',
+    'Sened',
+    'Sidi Aïch',
+    'Sidi Boubaker',
+    'Zannouch',
   ],
-  'Jendouba Governorate': [
-    'Aïn Draham', 'Balta - Bou Aouane', 'Bou Salem', 'Fernana', 'Ghardimaou', 'Jendouba', 'Oued Meliz', 'Tabarka',
+  Jendouba: [
+    'Aïn Draham',
+    'Balta - Bou Aouane',
+    'Bou Salem',
+    'Fernana',
+    'Ghardimaou',
+    'Jendouba',
+    'Oued Meliz',
+    'Tabarka',
   ],
-  'Kairouan Governorate': [
-    'Aïn Djeloula', 'Bou Hajla', 'Chebika', 'Echrarda', 'El Alâa', 'Haffouz', 'Hajeb el Ayoun', 'Kairouan',
-    'Menzel Mehiri', 'Nasrallah', 'Oueslatia', 'Sbikha',
+  Kairouan: [
+    'Aïn Djeloula',
+    'Bou Hajla',
+    'Chebika',
+    'Echrarda',
+    'El Alâa',
+    'Haffouz',
+    'Hajeb el Ayoun',
+    'Kairouan',
+    'Menzel Mehiri',
+    'Nasrallah',
+    'Oueslatia',
+    'Sbikha',
   ],
-  'Kasserine Governorate': [
-    'El Ayoun', 'Ezzouhour', 'Fériana', 'Foussana', 'Haïdra', 'Hassi El Ferid', 'Jedelienne', 'Kasserine',
-    'Majel Bel Abbès', 'Sbeïtla', 'Sbiba', 'Thala',
+  Kasserine: [
+    'El Ayoun',
+    'Ezzouhour',
+    'Fériana',
+    'Foussana',
+    'Haïdra',
+    'Hassi El Ferid',
+    'Jedelienne',
+    'Kasserine',
+    'Majel Bel Abbès',
+    'Sbeïtla',
+    'Sbiba',
+    'Thala',
   ],
-  'Kébili Governorate': ['Douz', 'Faouar', 'Kébili', 'Rjim Maatoug', 'Souk Lahad'],
-  'Kef Governorate': [
-    'Dahmani', 'El Ksour', 'Jérissa', 'Kalâat Khasba', 'Kalaat Senan', 'Kef', 'Nebeur', 'Sakiet Sidi Youssef',
-    'Sers', 'Tajerouine', 'Touiref',
+  Kébili: ['Douz', 'Faouar', 'Kébili', 'Rjim Maatoug', 'Souk Lahad'],
+  Kef: [
+    'Dahmani',
+    'El Ksour',
+    'Jérissa',
+    'Kalâat Khasba',
+    'Kalaat Senan',
+    'Kef',
+    'Nebeur',
+    'Sakiet Sidi Youssef',
+    'Sers',
+    'Tajerouine',
+    'Touiref',
   ],
-  'Mahdia Governorate': [
-    'Bou Merdes', 'Chebba', 'Chorbane', 'El Bradâa', 'El Jem', 'Essouassi', 'Hebira', 'Ksour Essef', 'Mahdia',
-    'Melloulèche', 'Ouled Chamekh', 'Rejiche', 'Sidi Alouane',
+  Mahdia: [
+    'Bou Merdes',
+    'Chebba',
+    'Chorbane',
+    'El Bradâa',
+    'El Jem',
+    'Essouassi',
+    'Hebira',
+    'Ksour Essef',
+    'Mahdia',
+    'Melloulèche',
+    'Ouled Chamekh',
+    'Rejiche',
+    'Sidi Alouane',
   ],
-  'Manouba Governorate': [
-    'Borj El Amri', 'Den Den', 'Djedeida', 'Douar Hicher', 'El Battan', 'Manouba', 'Mornaguia', 'Oued Ellil', 'Tebourba',
+  Manouba: [
+    'Borj El Amri',
+    'Den Den',
+    'Djedeida',
+    'Douar Hicher',
+    'El Battan',
+    'Manouba',
+    'Mornaguia',
+    'Oued Ellil',
+    'Tebourba',
   ],
-  'Médenine Governorate': [
-    'Ben Gardane', 'Beni Khedache', 'Djerba Ajim', 'Djerba Houmt Souk', 'Djerba Midoun', 'Médenine', 'Sidi Makhlouf', 'Zarzis',
+  Médenine: [
+    'Ben Gardane',
+    'Beni Khedache',
+    'Djerba Ajim',
+    'Djerba Houmt Souk',
+    'Djerba Midoun',
+    'Médenine',
+    'Sidi Makhlouf',
+    'Zarzis',
   ],
-  'Monastir Governorate': [
-    'Amiret El Fhoul', 'Amiret El Hojjaj', 'Amiret Touazra', 'Bekalta', 'Bembla', 'Benen Bodher', 'Bouhjar', 'Cherahil',
-    'El Masdour', 'Jemmal', 'Ksar Hellal', 'Ksibet El Mediouni', 'Lemta', 'Menzel Ennour', 'Menzel Farsi', 'Menzel Hayet',
-    'Menzel Kamel', 'Moknine', 'Sayada', 'Sidi Bennour', 'Téboulba', 'Touza', 'Zaouiet Kontoch', 'Ghenada',
+  Monastir: [
+    'Amiret El Fhoul',
+    'Amiret El Hojjaj',
+    'Amiret Touazra',
+    'Bekalta',
+    'Bembla',
+    'Benen Bodher',
+    'Bouhjar',
+    'Cherahil',
+    'El Masdour',
+    'Jemmal',
+    'Ksar Hellal',
+    'Ksibet El Mediouni',
+    'Lemta',
+    'Menzel Ennour',
+    'Menzel Farsi',
+    'Menzel Hayet',
+    'Menzel Kamel',
+    'Moknine',
+    'Sayada',
+    'Sidi Bennour',
+    'Téboulba',
+    'Touza',
+    'Zaouiet Kontoch',
+    'Ghenada',
   ],
-  'Nabeul Governorate': [
-    'Azmour', 'Béni Khalled', 'Béni Khiar', 'Bou Argoub', 'Dar Allouch', 'Dar Châabane El Fehri', 'El Haouaria',
-    'El Maâmoura', 'El Mida', 'Fondouk Jedid - Seltene', 'Grombalia', 'Hammam Ghezèze', 'Hammamet', 'Kelibia', 'Korba',
-    'Korbous', 'Menzel Bouzelfa', 'Menzel Horr', 'Menzel Temime', 'Nabeul', 'Soliman', 'Somâa', 'Takelsa', 'Tazarka', 'Zaouiet Djedidi',
+  Nabeul: [
+    'Azmour',
+    'Béni Khalled',
+    'Béni Khiar',
+    'Bou Argoub',
+    'Dar Allouch',
+    'Dar Châabane El Fehri',
+    'El Haouaria',
+    'El Maâmoura',
+    'El Mida',
+    'Fondouk Jedid - Seltene',
+    'Grombalia',
+    'Hammam Ghezèze',
+    'Hammamet',
+    'Kelibia',
+    'Korba',
+    'Korbous',
+    'Menzel Bouzelfa',
+    'Menzel Horr',
+    'Menzel Temime',
+    'Nabeul',
+    'Soliman',
+    'Somâa',
+    'Takelsa',
+    'Tazarka',
+    'Zaouiet Djedidi',
   ],
-  'Sfax Governorate': [
-    'Agareb', 'Bir Ali Ben Khalifa', 'El Amra', 'El Hencha', 'Graïba', 'Jebiniana', 'Kerkennah', 'Mahrès', 'Menzel Chaker',
-    'Sakiet Eddaïer', 'Sakiet Ezzit', 'Sfax', 'Skhira', 'Thyna',
+  Sfax: [
+    'Agareb',
+    'Bir Ali Ben Khalifa',
+    'El Amra',
+    'El Hencha',
+    'Graïba',
+    'Jebiniana',
+    'Kerkennah',
+    'Mahrès',
+    'Menzel Chaker',
+    'Sakiet Eddaïer',
+    'Sakiet Ezzit',
+    'Sfax',
+    'Skhira',
+    'Thyna',
   ],
-  'Sidi Bouzid Governorate': [
-    'Bir El Hafey', 'Cebbala Ouled Asker', 'El Hichria', 'Essaïda', 'Jilma', 'Meknassy', 'Menzel Bouzaiane', 'Mezzouna',
-    'Ouled Haffouz', 'Regueb', 'Sidi Ali Ben Aoun', 'Sidi Bouzid', 'Souk Jedid',
+  'Sidi Bouzid': [
+    'Bir El Hafey',
+    'Cebbala Ouled Asker',
+    'El Hichria',
+    'Essaïda',
+    'Jilma',
+    'Meknassy',
+    'Menzel Bouzaiane',
+    'Mezzouna',
+    'Ouled Haffouz',
+    'Regueb',
+    'Sidi Ali Ben Aoun',
+    'Sidi Bouzid',
+    'Souk Jedid',
   ],
-  'Siliana Governorate': [
-    'Bargou', 'Bou Arada', 'El Aroussa', 'El Krib', 'Gaâfour', 'Kesra', 'Makthar', 'Rouhia', 'Sidi Bou Rouis', 'Siliana',
+  Siliana: [
+    'Bargou',
+    'Bou Arada',
+    'El Aroussa',
+    'El Krib',
+    'Gaâfour',
+    'Kesra',
+    'Makthar',
+    'Rouhia',
+    'Sidi Bou Rouis',
+    'Siliana',
   ],
-  'Sousse Governorate': [
-    'Akouda', 'Bouficha', 'Enfida', 'Hammam Sousse', 'Hergla', 'Kalâa Kebira', 'Kalâa Seghira', 'Kondar', "M'saken",
-    'Sidi Bou Ali', 'Sidi El Hani', 'Sousse', 'Zaouiet Ksibet Thrayet',
+  Sousse: [
+    'Akouda',
+    'Bouficha',
+    'Enfida',
+    'Hammam Sousse',
+    'Hergla',
+    'Kalâa Kebira',
+    'Kalâa Seghira',
+    'Kondar',
+    "M'saken",
+    'Sidi Bou Ali',
+    'Sidi El Hani',
+    'Sousse',
+    'Zaouiet Ksibet Thrayet',
   ],
-  'Tataouine Governorate': ['Beni Mehira', 'Bir Lahmar', 'Dehiba', 'Ghomrassen', 'Remada', 'Smâr', 'Tataouine'],
-  'Tozeur Governorate': ['Degache', 'El Hamma du Jérid', 'Hazoua', 'Nefta', 'Tamerza', 'Tozeur'],
-  'Tunis Governorate': [
-    'Carthage', 'Le Bardo', 'La Goulette', 'Le Kram', 'La Marsa', 'Sidi Bou Said', 'Sidi Hassine', 'Tunis',
+  Tataouine: ['Beni Mehira', 'Bir Lahmar', 'Dehiba', 'Ghomrassen', 'Remada', 'Smâr', 'Tataouine'],
+  Tozeur: ['Degache', 'El Hamma du Jérid', 'Hazoua', 'Nefta', 'Tamerza', 'Tozeur'],
+  Tunis: [
+    'Carthage',
+    'Le Bardo',
+    'La Goulette',
+    'Le Kram',
+    'La Marsa',
+    'Sidi Bou Said',
+    'Sidi Hassine',
+    'Tunis',
+    'Ettadhamen',
   ],
-  'Zaghouan Governorate': ['Bir Mcherga', 'Djebel Oust', 'El Fahs', 'Nadhour', 'Saouaf', 'Zaghouan', 'Zriba'],
+  Zaghouan: ['Bir Mcherga', 'Djebel Oust', 'El Fahs', 'Nadhour', 'Saouaf', 'Zaghouan', 'Zriba'],
 };
 
 function esc(s) {
   return s.replace(/'/g, "''");
 }
 
+function governorateName(key) {
+  return key.replace(/\s+Governorate$/i, '').trim();
+}
+
+/** Skip delegation if it equals governorate (same-name rule as Ariana/Ben Arous). */
+function delegationsFor(gov, list) {
+  const g = governorateName(gov);
+  return list.filter((d) => d.trim().toLowerCase() !== g.toLowerCase());
+}
+
 const lines = [
-  '-- Tunisia governorates & delegations (reference data)',
-  '-- Run after tables exist: psql $DATABASE_URL -f backend/prisma/sql/seed_tunisia_governorates.sql',
+  '-- Tunisia governorates & delegations (UTF-8 reference data)',
+  '-- Run: psql -v ON_ERROR_STOP=1 -f backend/prisma/sql/seed_tunisia_governorates.sql',
+  '-- Or on VPS: see deploy/run-geo-seed.sh',
+  '',
+  "SET client_encoding = 'UTF8';",
   '',
   'CREATE TABLE IF NOT EXISTS governorate (',
   '  id SERIAL PRIMARY KEY,',
@@ -114,10 +339,9 @@ const lines = [
   '',
 ];
 
-const stripGov = (name) => name.replace(/\s+Governorate$/i, '').trim();
-
-for (const [govKey, delegations] of Object.entries(DATA)) {
-  const gov = stripGov(govKey);
+for (const [govKey, rawDelegations] of Object.entries(DATA)) {
+  const gov = governorateName(govKey);
+  const delegations = delegationsFor(govKey, rawDelegations);
   lines.push(`INSERT INTO governorate (name) VALUES ('${esc(gov)}') ON CONFLICT (name) DO NOTHING;`);
   for (const d of delegations) {
     lines.push(
@@ -129,4 +353,9 @@ for (const [govKey, delegations] of Object.entries(DATA)) {
 
 const out = join(__dirname, '..', 'prisma', 'sql', 'seed_tunisia_governorates.sql');
 writeFileSync(out, lines.join('\n'), 'utf8');
-console.log('Wrote', out);
+const govCount = Object.keys(DATA).length;
+let delCount = 0;
+for (const [govKey, list] of Object.entries(DATA)) {
+  delCount += delegationsFor(govKey, list).length;
+}
+console.log(`Wrote ${out} (${govCount} governorates, ${delCount} delegations after same-name filter)`);
