@@ -11,7 +11,9 @@ const envSchema = z.object({
 
   JWT_ACCESS_SECRET: z.string().min(32),
   JWT_REFRESH_SECRET: z.string().min(32),
+  /** Access cookie lifetime (seconds). Short-lived; renewed via refresh. */
   JWT_ACCESS_TTL: z.coerce.number().default(900),
+  /** Refresh cookie lifetime (seconds). Default 30 days — user stays signed in across browser restarts. */
   JWT_REFRESH_TTL: z.coerce.number().default(60 * 60 * 24 * 30),
   COOKIE_DOMAIN: z.string().default('localhost'),
   COOKIE_SECURE: z
