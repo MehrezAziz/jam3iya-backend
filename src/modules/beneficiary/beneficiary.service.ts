@@ -7,6 +7,7 @@ import type {
   CreateBeneficiaryDto,
   UpdateBeneficiaryDto,
   ListBeneficiariesQuery,
+  DonationPickSearchQuery,
   UpsertSpouseDto,
   UpsertChildDto,
   UpsertJobDto,
@@ -25,7 +26,9 @@ export class BeneficiaryService {
   ) {}
 
   async list(organizationId: string, query: ListBeneficiariesQuery, scopeDepartmentId?: string) {
-    const searchOr = query.q ? this.buildSearchOr(organizationId, query.q) : undefined;
+    const searchOr = query.q
+      ? this.buildSearchOr(organizationId, query.q, query.fields)
+      : undefined;
     const departmentFilter = scopeDepartmentId ?? query.departmentId;
     const where: Prisma.BeneficiaryWhereInput = {
       organizationId,
@@ -33,6 +36,7 @@ export class BeneficiaryService {
       ...(departmentFilter ? { primaryDepartmentId: departmentFilter } : {}),
       ...(query.status ? { status: query.status } : {}),
       ...(query.region ? { region: { equals: query.region } } : {}),
+      ...(query.isOrphan !== undefined ? { isOrphan: query.isOrphan } : {}),
       ...(searchOr ? { OR: searchOr } : {}),
     };
 
@@ -49,6 +53,7 @@ export class BeneficiaryService {
           city: true,
           publicAlias: true,
           primaryDepartmentId: true,
+          isOrphan: true,
           createdAt: true,
           lastVerifiedAt: true,
           validUntil: true,
@@ -79,6 +84,7 @@ export class BeneficiaryService {
       region: r.region,
       city: r.city,
       publicAlias: r.publicAlias,
+      isOrphan: r.isOrphan,
       createdAt: r.createdAt,
       lastVerifiedAt: r.lastVerifiedAt,
       validUntil: r.validUntil,
@@ -89,40 +95,170 @@ export class BeneficiaryService {
     return { total, items, limit: query.limit, offset: query.offset };
   }
 
+  formatFullName(organizationId: string, firstNameEnc: Buffer, lastNameEnc: Buffer): string {
+    return `${this.enc.decryptToString(firstNameEnc, organizationId, 'first_name')} ${this.enc.decryptToString(lastNameEnc, organizationId, 'last_name')}`.trim();
+  }
+
+  /** Search beneficiaries for campaign donation collection (returns decrypted PII for staff pick). */
+  async searchForDonationPick(organizationId: string, query: DonationPickSearchQuery) {
+    const enabled = new Set(query.fields);
+    const searchOr = this.buildSearchOr(organizationId, query.q, query.fields);
+    const digitSubs = this.queryDigitSubstrings(query.q, 3);
+    const useDigitScan =
+      digitSubs.length > 0 && (enabled.has('phone') || enabled.has('cin'));
+
+    if (searchOr.length === 0 && !useDigitScan) return { items: [] as const };
+
+    let campaignMemberIds = new Set<string>();
+    if (query.campaignId) {
+      const links = await this.prisma.campaignBeneficiary.findMany({
+        where: {
+          campaignId: query.campaignId,
+          beneficiary: { organizationId, deletedAt: null },
+        },
+        select: { beneficiaryId: true },
+      });
+      campaignMemberIds = new Set(links.map((l) => l.beneficiaryId));
+    }
+
+    const priorByBeneficiaryId = new Map<string, number>();
+    if (query.campaignId) {
+      const priorGroups = await this.prisma.donationBeneficiarySplit.groupBy({
+        by: ['beneficiaryId'],
+        where: {
+          donation: {
+            organizationId,
+            campaignId: query.campaignId,
+            deletedAt: null,
+          },
+        },
+        _sum: { amountMinor: true },
+      });
+      for (const g of priorGroups) {
+        priorByBeneficiaryId.set(g.beneficiaryId, Number(g._sum.amountMinor ?? 0));
+      }
+    }
+
+    const pickSelect = {
+      id: true,
+      code: true,
+      publicAlias: true,
+      status: true,
+      isOrphan: true,
+      firstNameEnc: true,
+      lastNameEnc: true,
+      phoneEnc: true,
+      cinEnc: true,
+    } as const;
+
+    const byId = new Map<
+      string,
+      {
+        id: string;
+        code: string;
+        publicAlias: string | null;
+        status: string;
+        isOrphan: boolean;
+        firstNameEnc: Buffer;
+        lastNameEnc: Buffer;
+        phoneEnc: Buffer | null;
+        cinEnc: Buffer | null;
+      }
+    >();
+
+    if (searchOr.length > 0) {
+      const indexed = await this.prisma.beneficiary.findMany({
+        where: { organizationId, deletedAt: null, OR: searchOr },
+        take: query.limit,
+        orderBy: { code: 'asc' },
+        select: pickSelect,
+      });
+      for (const r of indexed) byId.set(r.id, r);
+    }
+
+    if (useDigitScan) {
+      const scanned = await this.findByDigitSubstrings(
+        organizationId,
+        query.q,
+        enabled,
+        query.limit * 3,
+        pickSelect,
+      );
+      for (const r of scanned) {
+        if (!byId.has(r.id)) byId.set(r.id, r);
+      }
+    }
+
+    const rows = [...byId.values()].sort((a, b) => a.code.localeCompare(b.code)).slice(0, query.limit);
+
+    return {
+      items: rows.map((r) => {
+        const phone = r.phoneEnc
+          ? this.enc.decryptToString(r.phoneEnc, organizationId, 'phone')
+          : null;
+        const cin = r.cinEnc ? this.enc.decryptToString(r.cinEnc, organizationId, 'cin') : null;
+        return {
+          id: r.id,
+          code: r.code,
+          publicAlias: r.publicAlias,
+          status: r.status,
+          isOrphan: r.isOrphan,
+          fullName: this.formatFullName(organizationId, r.firstNameEnc, r.lastNameEnc),
+          phone,
+          cin,
+          phoneHighlight: enabled.has('phone')
+            ? this.computeDigitHighlight(phone, query.q)
+            : null,
+          cinHighlight: enabled.has('cin') ? this.computeDigitHighlight(cin, query.q) : null,
+          inCampaign: query.campaignId ? campaignMemberIds.has(r.id) : true,
+          priorAllocatedMinor: priorByBeneficiaryId.get(r.id) ?? 0,
+        };
+      }),
+    };
+  }
+
   async rebuildAllSearchIndexes(organizationId: string) {
     const rows = await this.prisma.beneficiary.findMany({
       where: { organizationId, deletedAt: null },
-      select: { id: true, firstNameEnc: true, lastNameEnc: true, phoneEnc: true },
+      select: { id: true, firstNameEnc: true, lastNameEnc: true, phoneEnc: true, cinEnc: true },
     });
     for (const row of rows) {
       const firstName = this.enc.decryptToString(row.firstNameEnc, organizationId, 'first_name');
       const lastName = this.enc.decryptToString(row.lastNameEnc, organizationId, 'last_name');
       const phone = row.phoneEnc ? this.enc.decryptToString(row.phoneEnc, organizationId, 'phone') : null;
-      await this.rebuildSearchIndex(organizationId, row.id, firstName, lastName, phone);
+      const cin = row.cinEnc ? this.enc.decryptToString(row.cinEnc, organizationId, 'cin') : null;
+      await this.rebuildSearchIndex(organizationId, row.id, firstName, lastName, phone, cin);
     }
     return { rebuilt: rows.length };
   }
 
   /** Search by code, CIN, name tokens (partial), phone prefix, or full name. */
-  private buildSearchOr(organizationId: string, raw: string): Prisma.BeneficiaryWhereInput[] {
+  private buildSearchOr(
+    organizationId: string,
+    raw: string,
+    fields?: Array<'name' | 'phone' | 'cin' | 'code'>,
+  ): Prisma.BeneficiaryWhereInput[] {
     const term = raw.trim();
     if (!term) return [];
+    const enabled = fields?.length
+      ? new Set(fields)
+      : new Set<'name' | 'phone' | 'cin' | 'code'>(['name', 'phone', 'cin', 'code']);
     const or: Prisma.BeneficiaryWhereInput[] = [];
 
-    if (term.length >= 2) {
+    if (enabled.has('code') && term.length >= 2) {
       or.push({ code: { contains: term, mode: 'insensitive' } });
     }
 
     const cinDigits = term.replace(/\D/g, '');
-    if (/^\d{8}$/.test(cinDigits)) {
+    if (enabled.has('cin') && /^\d{8}$/.test(cinDigits)) {
       or.push({ cinHash: this.hash.hash(cinDigits, organizationId, 'cin') });
     }
 
     const phoneDigits = term.replace(/\D/g, '');
-    if (phoneDigits.length >= 4) {
+    if (enabled.has('phone') && phoneDigits.length >= 3) {
       const variants = this.phoneVariants(phoneDigits);
       for (const v of variants) {
-        for (let len = 4; len <= v.length; len++) {
+        for (let len = 3; len <= v.length; len++) {
           const prefix = v.slice(0, len);
           or.push({
             searchIndexes: {
@@ -139,23 +275,84 @@ export class BeneficiaryService {
       }
     }
 
-    const words = term.split(/\s+/).filter((w) => w.length >= 2);
-    for (const word of words) {
-      or.push({
-        searchIndexes: {
-          some: {
-            kind: 'name_token',
-            tokenHash: this.hash.hash(word, organizationId, 'name_token'),
+    if ((enabled.has('phone') || enabled.has('cin')) && phoneDigits.length >= 3) {
+      for (const sub of this.queryDigitSubstrings(term, 3)) {
+        or.push({
+          searchIndexes: {
+            some: {
+              kind: 'digit_substring',
+              tokenHash: this.hash.hash(sub, organizationId, 'digit_substring'),
+            },
           },
-        },
-      });
+        });
+      }
     }
 
-    or.push({ fullNameHash: this.hash.hash(term, organizationId, 'full_name') });
-    if (words.length >= 2) {
-      or.push({
-        fullNameHash: this.hash.hash(words.join(' '), organizationId, 'full_name'),
-      });
+    if (enabled.has('name')) {
+      const words = term.split(/\s+/).filter((w) => w.length >= 2);
+
+      if (words.length === 1) {
+        const word = words[0];
+        or.push({
+          searchIndexes: {
+            some: {
+              kind: 'first_name',
+              tokenHash: this.hash.hash(word, organizationId, 'first_name'),
+            },
+          },
+        });
+        or.push({
+          searchIndexes: {
+            some: {
+              kind: 'last_name',
+              tokenHash: this.hash.hash(word, organizationId, 'last_name'),
+            },
+          },
+        });
+        or.push({
+          searchIndexes: {
+            some: {
+              kind: 'name_token',
+              tokenHash: this.hash.hash(word, organizationId, 'name_token'),
+            },
+          },
+        });
+      } else if (words.length >= 2) {
+        or.push({
+          AND: [
+            {
+              searchIndexes: {
+                some: {
+                  kind: 'first_name',
+                  tokenHash: this.hash.hash(words[0], organizationId, 'first_name'),
+                },
+              },
+            },
+            {
+              searchIndexes: {
+                some: {
+                  kind: 'last_name',
+                  tokenHash: this.hash.hash(words[words.length - 1], organizationId, 'last_name'),
+                },
+              },
+            },
+          ],
+        });
+        for (const word of words) {
+          or.push({
+            searchIndexes: {
+              some: {
+                kind: 'name_token',
+                tokenHash: this.hash.hash(word, organizationId, 'name_token'),
+              },
+            },
+          });
+        }
+        or.push({ fullNameHash: this.hash.hash(term, organizationId, 'full_name') });
+        or.push({
+          fullNameHash: this.hash.hash(words.join(' '), organizationId, 'full_name'),
+        });
+      }
     }
 
     return or;
@@ -170,9 +367,128 @@ export class BeneficiaryService {
     return [...out];
   }
 
+  /** All consecutive digit substrings of length >= minLen found in the query. */
+  private queryDigitSubstrings(raw: string, minLen = 3): string[] {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length < minLen) return [];
+    const subs = new Set<string>();
+    for (let i = 0; i < digits.length; i++) {
+      for (let len = minLen; len <= digits.length - i; len++) {
+        subs.add(digits.slice(i, i + len));
+      }
+    }
+    return [...subs];
+  }
+
+  private indexDigitSubstrings(
+    rows: {
+      organizationId: string;
+      beneficiaryId: string;
+      kind: 'name_token' | 'phone_prefix' | 'first_name' | 'last_name' | 'digit_substring';
+      tokenHash: Buffer;
+    }[],
+    organizationId: string,
+    beneficiaryId: string,
+    digits: string,
+  ) {
+    const normalized = digits.replace(/\D/g, '');
+    for (const sub of this.queryDigitSubstrings(normalized, 3)) {
+      rows.push({
+        organizationId,
+        beneficiaryId,
+        kind: 'digit_substring',
+        tokenHash: this.hash.hash(sub, organizationId, 'digit_substring'),
+      });
+    }
+  }
+
+  private computeDigitHighlight(
+    value: string | null,
+    rawQuery: string,
+  ): { start: number; end: number } | null {
+    if (!value) return null;
+    const valueDigits = value.replace(/\D/g, '');
+    const subs = this.queryDigitSubstrings(rawQuery, 3).sort((a, b) => b.length - a.length);
+    for (const sub of subs) {
+      const idx = valueDigits.indexOf(sub);
+      if (idx >= 0) {
+        return this.mapDigitRangeToDisplay(value, idx, idx + sub.length);
+      }
+    }
+    return null;
+  }
+
+  private mapDigitRangeToDisplay(
+    value: string,
+    digitStart: number,
+    digitEnd: number,
+  ): { start: number; end: number } {
+    let digitCount = 0;
+    let start = 0;
+    let end = value.length;
+    for (let i = 0; i < value.length; i++) {
+      if (/\d/.test(value[i]!)) {
+        if (digitCount === digitStart) start = i;
+        digitCount++;
+        if (digitCount === digitEnd) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    if (digitCount < digitEnd) end = value.length;
+    return { start, end };
+  }
+
+  private async findByDigitSubstrings<T extends Prisma.BeneficiarySelect>(
+    organizationId: string,
+    rawQuery: string,
+    enabled: Set<'name' | 'phone' | 'cin' | 'code'>,
+    limit: number,
+    select: T,
+  ) {
+    const subs = this.queryDigitSubstrings(rawQuery, 3);
+    if (subs.length === 0) return [] as Array<Prisma.BeneficiaryGetPayload<{ select: T }>>;
+
+    const or: Prisma.BeneficiaryWhereInput[] = [];
+    if (enabled.has('phone')) or.push({ phoneEnc: { not: null } });
+    if (enabled.has('cin')) or.push({ cinEnc: { not: null } });
+    if (or.length === 0) return [] as Array<Prisma.BeneficiaryGetPayload<{ select: T }>>;
+
+    const candidates = await this.prisma.beneficiary.findMany({
+      where: { organizationId, deletedAt: null, OR: or },
+      select,
+      take: 2000,
+      orderBy: { code: 'asc' },
+    });
+
+    const matched: Array<Prisma.BeneficiaryGetPayload<{ select: T }>> = [];
+    for (const row of candidates) {
+      const phoneEnc = (row as { phoneEnc?: Buffer | null }).phoneEnc;
+      const cinEnc = (row as { cinEnc?: Buffer | null }).cinEnc;
+      const phone = phoneEnc
+        ? this.enc.decryptToString(phoneEnc, organizationId, 'phone')
+        : null;
+      const cin = cinEnc ? this.enc.decryptToString(cinEnc, organizationId, 'cin') : null;
+      const phoneDigits = phone?.replace(/\D/g, '') ?? '';
+      const cinDigits = cin?.replace(/\D/g, '') ?? '';
+      const phoneHit = enabled.has('phone') && subs.some((s) => phoneDigits.includes(s));
+      const cinHit = enabled.has('cin') && subs.some((s) => cinDigits.includes(s));
+      if (phoneHit || cinHit) {
+        matched.push(row);
+        if (matched.length >= limit) break;
+      }
+    }
+    return matched;
+  }
+
   private nameTokens(firstName: string, lastName: string): string[] {
     const tokens = new Set<string>();
-    const full = `${firstName} ${lastName}`.trim();
+    const first = firstName.trim();
+    const last = lastName.trim();
+    if (first.length >= 2) tokens.add(first);
+    if (last.length >= 2) tokens.add(last);
+    const full = `${first} ${last}`.trim();
     for (const w of full.split(/\s+/)) {
       if (w.length >= 2) tokens.add(w);
     }
@@ -185,10 +501,32 @@ export class BeneficiaryService {
     firstName: string,
     lastName: string,
     phone?: string | null,
+    cin?: string | null,
   ) {
     await this.prisma.beneficiarySearchIndex.deleteMany({ where: { beneficiaryId } });
-    const rows: { organizationId: string; beneficiaryId: string; kind: 'name_token' | 'phone_prefix'; tokenHash: Buffer }[] =
-      [];
+    const rows: {
+      organizationId: string;
+      beneficiaryId: string;
+      kind: 'name_token' | 'phone_prefix' | 'first_name' | 'last_name' | 'digit_substring';
+      tokenHash: Buffer;
+    }[] = [];
+
+    if (firstName.trim().length >= 2) {
+      rows.push({
+        organizationId,
+        beneficiaryId,
+        kind: 'first_name',
+        tokenHash: this.hash.hash(firstName.trim(), organizationId, 'first_name'),
+      });
+    }
+    if (lastName.trim().length >= 2) {
+      rows.push({
+        organizationId,
+        beneficiaryId,
+        kind: 'last_name',
+        tokenHash: this.hash.hash(lastName.trim(), organizationId, 'last_name'),
+      });
+    }
 
     for (const token of this.nameTokens(firstName, lastName)) {
       rows.push({
@@ -201,7 +539,7 @@ export class BeneficiaryService {
 
     if (phone) {
       for (const variant of this.phoneVariants(phone.replace(/\D/g, ''))) {
-        for (let len = 4; len <= variant.length; len++) {
+        for (let len = 3; len <= variant.length; len++) {
           const prefix = variant.slice(0, len);
           rows.push({
             organizationId,
@@ -211,6 +549,11 @@ export class BeneficiaryService {
           });
         }
       }
+      this.indexDigitSubstrings(rows, organizationId, beneficiaryId, phone);
+    }
+
+    if (cin) {
+      this.indexDigitSubstrings(rows, organizationId, beneficiaryId, cin);
     }
 
     if (rows.length > 0) {
@@ -261,6 +604,7 @@ export class BeneficiaryService {
           city: dto.city,
           publicAlias: dto.publicAlias,
           primaryDepartmentId: dto.departmentId,
+          isOrphan: dto.isOrphan ?? false,
           status: 'draft',
         },
         select: { id: true, code: true },
@@ -279,7 +623,7 @@ export class BeneficiaryService {
       return beneficiary;
     });
 
-    await this.rebuildSearchIndex(organizationId, created.id, dto.firstName, dto.lastName, dto.phone);
+    await this.rebuildSearchIndex(organizationId, created.id, dto.firstName, dto.lastName, dto.phone, dto.cin);
     return created;
   }
 
@@ -298,6 +642,7 @@ export class BeneficiaryService {
         region: true,
         city: true,
         publicAlias: true,
+        isOrphan: true,
         hasCnss: true,
         hasCnam: true,
         hasYellowNotebook: true,
@@ -343,6 +688,7 @@ export class BeneficiaryService {
       region: b.region,
       city: b.city,
       publicAlias: b.publicAlias,
+      isOrphan: b.isOrphan,
       status: b.status,
       lastVerifiedAt: b.lastVerifiedAt,
       validUntil: b.validUntil,
@@ -391,10 +737,16 @@ export class BeneficiaryService {
     if (dto.hasWhiteNotebook !== undefined) updates.hasWhiteNotebook = dto.hasWhiteNotebook;
     if (dto.hasMonthlyGrant !== undefined) updates.hasMonthlyGrant = dto.hasMonthlyGrant;
     if (dto.photoConsent !== undefined) updates.photoConsent = dto.photoConsent;
+    if (dto.isOrphan !== undefined) updates.isOrphan = dto.isOrphan;
 
     await this.prisma.beneficiary.update({ where: { id }, data: updates });
 
-    if (dto.firstName !== undefined || dto.lastName !== undefined || dto.phone !== undefined) {
+    if (
+      dto.firstName !== undefined ||
+      dto.lastName !== undefined ||
+      dto.phone !== undefined ||
+      dto.cin !== undefined
+    ) {
       const firstName =
         dto.firstName ?? this.enc.decryptToString(existing.firstNameEnc, organizationId, 'first_name');
       const lastName =
@@ -405,7 +757,13 @@ export class BeneficiaryService {
           : existing.phoneEnc
             ? this.enc.decryptToString(existing.phoneEnc, organizationId, 'phone')
             : null;
-      await this.rebuildSearchIndex(organizationId, id, firstName, lastName, phone);
+      const cin =
+        dto.cin !== undefined
+          ? dto.cin
+          : existing.cinEnc
+            ? this.enc.decryptToString(existing.cinEnc, organizationId, 'cin')
+            : null;
+      await this.rebuildSearchIndex(organizationId, id, firstName, lastName, phone, cin);
     }
 
     return { id, ok: true };

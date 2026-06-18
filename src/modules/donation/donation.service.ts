@@ -3,13 +3,26 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { EncryptionService } from '../../common/crypto/encryption.service';
 import { TreasuryService } from '../treasury/treasury.service';
+import { BeneficiaryService } from '../beneficiary/beneficiary.service';
+import { isEndDateBeforeToday } from '../../common/utils/calendar-date';
 import { z } from 'zod';
 
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
+const beneficiarySplitSchema = z.object({
+  beneficiaryId: z.string().uuid(),
+  amountMinor: z.number().int().positive(),
+});
+
+const itemGrantSchema = z.object({
+  beneficiaryId: z.string().uuid(),
+  itemId: z.string().uuid(),
+  quantity: z.number().positive(),
+});
+
 export const createCashDonationSchema = z
   .object({
-    amount: z.number().int().positive(),
+    amount: z.number().int().nonnegative().default(0),
     currency: z.string().length(3).default('TND'),
     donorId: z.string().uuid().optional(),
     campaignId: z.string().uuid().optional(),
@@ -25,11 +38,27 @@ export const createCashDonationSchema = z
     donorFiscalIdSnapshot: z.string().max(80).optional(),
     notes: z.string().max(2000).optional(),
     isAnonymous: z.boolean().optional(),
+    beneficiarySplits: z.array(beneficiarySplitSchema).optional(),
+    /** Inventory items given to beneficiaries (reduces stock). */
+    itemGrants: z.array(itemGrantSchema).optional(),
+  })
+  .refine((d) => d.amount > 0 || (d.itemGrants?.length ?? 0) > 0, {
+    message: 'Provide a cash amount and/or at least one item grant',
+    path: ['amount'],
   })
   .refine((d) => !(d.campaignId && d.spendCategory), {
     message: 'campaignId and spendCategory are mutually exclusive',
     path: ['spendCategory'],
-  });
+  })
+  .refine(
+    (d) => {
+      if (!d.beneficiarySplits?.length) return true;
+      if (d.amount <= 0) return false;
+      const sum = d.beneficiarySplits.reduce((acc, s) => acc + s.amountMinor, 0);
+      return sum === d.amount;
+    },
+    { message: 'Beneficiary split amounts must sum to the donation total', path: ['beneficiarySplits'] },
+  );
 export type CreateCashDonationDto = z.infer<typeof createCashDonationSchema>;
 
 export const listDonationsQuerySchema = z.object({
@@ -98,6 +127,7 @@ export class DonationService {
     private readonly prisma: PrismaService,
     private readonly enc: EncryptionService,
     private readonly treasury: TreasuryService,
+    private readonly beneficiaries: BeneficiaryService,
   ) {}
 
   async list(
@@ -169,6 +199,15 @@ export class DonationService {
             orderBy: { issuedAt: 'desc' },
             select: { id: true, number: true, series: true, yearIssued: true },
           },
+          itemGrants: {
+            select: {
+              id: true,
+              quantity: true,
+              unit: true,
+              item: { select: { name: true, unit: true } },
+              beneficiary: { select: { code: true, firstNameEnc: true, lastNameEnc: true } },
+            },
+          },
         },
       }),
     ]);
@@ -223,6 +262,18 @@ export class DonationService {
             yearIssued: row.bills[0].yearIssued,
           }
         : null,
+      itemGrants: row.itemGrants.map((g) => ({
+        id: g.id,
+        quantity: Number(g.quantity),
+        unit: g.unit ?? g.item.unit,
+        itemName: g.item.name,
+        beneficiaryCode: g.beneficiary.code,
+        beneficiaryName: this.beneficiaries.formatFullName(
+          organizationId,
+          g.beneficiary.firstNameEnc,
+          g.beneficiary.lastNameEnc,
+        ),
+      })),
       };
     });
 
@@ -244,23 +295,48 @@ export class DonationService {
       const donor = await this.prisma.donor.findFirst({ where: { id: dto.donorId, organizationId } });
       if (!donor) throw new NotFoundException('Donor not found in this organization');
     }
-    if (!dto.donorId && !dto.donorNameSnapshot && !dto.isAnonymous) {
+    if (!dto.donorId && !dto.donorNameSnapshot && !dto.isAnonymous && dto.amount > 0) {
       throw new BadRequestException('Provide a donor account, a name snapshot, or mark donation as anonymous.');
+    }
+
+    if (dto.itemGrants?.length) {
+      await this.validateItemGrants(organizationId, dto.campaignId, dto.itemGrants);
     }
 
     if (dto.campaignId) {
       const campaign = await this.prisma.campaign.findFirst({
         where: { id: dto.campaignId, organizationId, deletedAt: null },
-        select: { id: true, state: true },
+        select: { id: true, state: true, endsAt: true },
       });
       if (!campaign) throw new NotFoundException('Campaign not found');
       if (campaign.state === 'closed') {
         throw new BadRequestException('Cannot donate to a closed campaign');
       }
+      if (campaign.endsAt && isEndDateBeforeToday(campaign.endsAt)) {
+        throw new BadRequestException('Cannot donate to a campaign whose end date has passed');
+      }
+    }
+
+    if (dto.beneficiarySplits?.length) {
+      if (!dto.campaignId) {
+        throw new BadRequestException('Beneficiary splits require a campaign');
+      }
+      const ids = [...new Set(dto.beneficiarySplits.map((s) => s.beneficiaryId))];
+      if (ids.length !== dto.beneficiarySplits.length) {
+        throw new BadRequestException('Duplicate beneficiaries in split list');
+      }
+      const links = await this.prisma.campaignBeneficiary.findMany({
+        where: { campaignId: dto.campaignId, beneficiaryId: { in: ids } },
+        select: { beneficiaryId: true },
+      });
+      if (links.length !== ids.length) {
+        throw new BadRequestException('All split beneficiaries must belong to the campaign list');
+      }
     }
 
     const receivedAt = parseReceivedAt(dto.receivedAt);
     const amountMinor = BigInt(dto.amount);
+    const isAnonymous = dto.isAnonymous ?? (!dto.donorId && dto.amount > 0);
 
     return this.prisma.$transaction(async (tx) => {
       const donation = await tx.donation.create({
@@ -276,31 +352,70 @@ export class DonationService {
           receivedAt,
           receivedById,
           departmentId,
-          isAnonymous: dto.isAnonymous ?? !dto.donorId,
+          isAnonymous,
           donorNameSnapshot: dto.donorNameSnapshot ?? null,
           donorFiscalIdSnapshot: dto.donorFiscalIdSnapshot ?? null,
           notesEnc: dto.notes ? this.enc.encrypt(dto.notes, organizationId, 'notes') : null,
         },
       });
 
-      await tx.payment.create({
-        data: {
-          donationId: donation.id,
-          provider: 'manual_cash',
-          amountMinor,
-          currency: dto.currency.toUpperCase(),
-          status: 'succeeded',
-          idempotencyKey: `cash-${donation.id}`,
-          completedAt: new Date(),
-          cashReceivedById: receivedById ?? undefined,
-        },
-      });
+      if (amountMinor > 0n) {
+        await tx.payment.create({
+          data: {
+            donationId: donation.id,
+            provider: 'manual_cash',
+            amountMinor,
+            currency: dto.currency.toUpperCase(),
+            status: 'succeeded',
+            idempotencyKey: `cash-${donation.id}`,
+            completedAt: new Date(),
+            cashReceivedById: receivedById ?? undefined,
+          },
+        });
+      }
 
-      if (dto.campaignId) {
+      if (dto.campaignId && amountMinor > 0n) {
         await tx.campaign.update({
           where: { id: dto.campaignId },
           data: { collectedAmountMinor: { increment: amountMinor } },
         });
+      }
+
+      if (dto.beneficiarySplits?.length) {
+        await tx.donationBeneficiarySplit.createMany({
+          data: dto.beneficiarySplits.map((s) => ({
+            donationId: donation.id,
+            beneficiaryId: s.beneficiaryId,
+            amountMinor: BigInt(s.amountMinor),
+            currency: dto.currency.toUpperCase(),
+          })),
+        });
+      }
+
+      if (dto.itemGrants?.length) {
+        for (const grant of dto.itemGrants) {
+          const item = await tx.inventoryItem.findFirst({
+            where: { id: grant.itemId, organizationId, deletedAt: null },
+            select: { unit: true },
+          });
+          const row = await tx.donationItemGrant.create({
+            data: {
+              donationId: donation.id,
+              beneficiaryId: grant.beneficiaryId,
+              itemId: grant.itemId,
+              quantity: grant.quantity,
+              unit: item?.unit ?? null,
+            },
+          });
+          await this.consumeStockForGrant(
+            tx,
+            organizationId,
+            receivedById,
+            row.id,
+            grant.itemId,
+            grant.quantity,
+          );
+        }
       }
 
       return {
@@ -313,6 +428,233 @@ export class DonationService {
         spendCategory: donation.spendCategory,
       };
     });
+  }
+
+  private async validateItemGrants(
+    organizationId: string,
+    campaignId: string | undefined,
+    grants: Array<{ beneficiaryId: string; itemId: string; quantity: number }>,
+  ) {
+    const beneficiaryIds = [...new Set(grants.map((g) => g.beneficiaryId))];
+    const itemIds = [...new Set(grants.map((g) => g.itemId))];
+
+    const beneficiaries = await this.prisma.beneficiary.findMany({
+      where: { id: { in: beneficiaryIds }, organizationId, deletedAt: null },
+      select: { id: true },
+    });
+    if (beneficiaries.length !== beneficiaryIds.length) {
+      throw new BadRequestException('One or more beneficiaries not found');
+    }
+
+    if (campaignId) {
+      const links = await this.prisma.campaignBeneficiary.findMany({
+        where: { campaignId, beneficiaryId: { in: beneficiaryIds } },
+        select: { beneficiaryId: true },
+      });
+      if (links.length !== beneficiaryIds.length) {
+        throw new BadRequestException('All item grant beneficiaries must belong to the campaign list');
+      }
+    }
+
+    const items = await this.prisma.inventoryItem.findMany({
+      where: { id: { in: itemIds }, organizationId, deletedAt: null },
+      select: { id: true, name: true },
+    });
+    if (items.length !== itemIds.length) {
+      throw new BadRequestException('One or more inventory items not found');
+    }
+    const itemNames = new Map(items.map((i) => [i.id, i.name]));
+
+    const neededByItem = new Map<string, number>();
+    for (const g of grants) {
+      neededByItem.set(g.itemId, (neededByItem.get(g.itemId) ?? 0) + g.quantity);
+    }
+
+    for (const [itemId, needed] of neededByItem) {
+      const agg = await this.prisma.stockLot.aggregate({
+        where: {
+          itemId,
+          deletedAt: null,
+          quantityRemaining: { gt: 0 },
+          item: { organizationId, deletedAt: null },
+        },
+        _sum: { quantityRemaining: true },
+      });
+      const available = Number(agg._sum.quantityRemaining ?? 0);
+      if (available < needed) {
+        throw new BadRequestException(
+          `Insufficient stock for "${itemNames.get(itemId) ?? itemId}": need ${needed}, available ${available}`,
+        );
+      }
+    }
+  }
+
+  private async consumeStockForGrant(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    performedById: string | null,
+    grantId: string,
+    itemId: string,
+    quantity: number,
+  ) {
+    let remaining = quantity;
+    const lots = await tx.stockLot.findMany({
+      where: {
+        itemId,
+        deletedAt: null,
+        quantityRemaining: { gt: 0 },
+        item: { organizationId, deletedAt: null },
+      },
+      orderBy: [{ expiresOn: 'asc' }, { receivedAt: 'asc' }],
+    });
+
+    let linkedGrant = false;
+    for (const lot of lots) {
+      if (remaining <= 0) break;
+      const take = Math.min(remaining, Number(lot.quantityRemaining));
+      await tx.stockLot.update({
+        where: { id: lot.id },
+        data: { quantityRemaining: Number(lot.quantityRemaining) - take },
+      });
+      await tx.stockMovement.create({
+        data: {
+          lotId: lot.id,
+          type: 'out',
+          quantity: take,
+          reason: 'donation_item_grant',
+          performedById: performedById ?? undefined,
+          donationItemGrantId: !linkedGrant ? grantId : undefined,
+        },
+      });
+      linkedGrant = true;
+      remaining -= take;
+    }
+    if (remaining > 0) {
+      throw new BadRequestException('Not enough stock at grant time');
+    }
+  }
+
+  async getById(organizationId: string, id: string, scopeDepartmentId?: string) {
+    const row = await this.prisma.donation.findFirst({
+      where: { id, organizationId, deletedAt: null },
+      select: {
+        id: true,
+        kind: true,
+        amountMinor: true,
+        currency: true,
+        receivedAt: true,
+        donorId: true,
+        campaignId: true,
+        occasionId: true,
+        spendCategory: true,
+        isAnonymous: true,
+        donorNameSnapshot: true,
+        donorFiscalIdSnapshot: true,
+        departmentId: true,
+        notesEnc: true,
+        inKindQuantity: true,
+        inKindUnit: true,
+        inKindEstValueMinor: true,
+        receivedById: true,
+        campaign: { select: { name: true } },
+        department: { select: { id: true, name: true } },
+        donor: { select: { id: true, displayPseudo: true, user: { select: { fullName: true } } } },
+        inKindItem: { select: { id: true, name: true, unit: true } },
+        bills: {
+          where: { deletedAt: null, status: 'issued' },
+          orderBy: { issuedAt: 'desc' },
+          select: { id: true, number: true, series: true, yearIssued: true },
+        },
+        beneficiarySplits: {
+          select: {
+            id: true,
+            amountMinor: true,
+            distributedAmountMinor: true,
+            currency: true,
+            paidAt: true,
+            beneficiary: { select: { code: true, firstNameEnc: true, lastNameEnc: true } },
+          },
+        },
+        itemGrants: {
+          select: {
+            id: true,
+            quantity: true,
+            unit: true,
+            item: { select: { id: true, name: true, unit: true } },
+            beneficiary: { select: { code: true, firstNameEnc: true, lastNameEnc: true } },
+          },
+        },
+      },
+    });
+    if (!row) throw new NotFoundException('Donation not found');
+
+    if (scopeDepartmentId && row.departmentId && row.departmentId !== scopeDepartmentId) {
+      throw new NotFoundException('Donation not found');
+    }
+
+    return {
+      id: row.id,
+      kind: row.kind,
+      amountMinor: Number(row.amountMinor),
+      currency: row.currency,
+      receivedAt: row.receivedAt.toISOString(),
+      donorId: row.donorId,
+      donorDisplayName: row.donor?.user.fullName ?? row.donor?.displayPseudo ?? null,
+      campaignId: row.campaignId,
+      campaignName: row.campaign?.name ?? null,
+      occasionId: row.occasionId,
+      spendCategory: row.spendCategory,
+      isAnonymous: row.isAnonymous,
+      donorNameSnapshot: row.donorNameSnapshot,
+      donorFiscalIdSnapshot: row.donorFiscalIdSnapshot,
+      departmentId: row.department?.id ?? row.departmentId,
+      departmentName: row.department?.name ?? null,
+      notes: row.notesEnc ? this.enc.decryptToString(row.notesEnc, organizationId, 'notes') : null,
+      inKindItem: row.inKindItem
+        ? {
+            id: row.inKindItem.id,
+            name: row.inKindItem.name,
+            unit: row.inKindItem.unit,
+            quantity: row.inKindQuantity != null ? Number(row.inKindQuantity) : null,
+            estimatedValueMinor:
+              row.inKindEstValueMinor != null ? Number(row.inKindEstValueMinor) : null,
+          }
+        : null,
+      receiptBill: row.bills[0]
+        ? {
+            id: row.bills[0].id,
+            number: row.bills[0].number,
+            series: row.bills[0].series,
+            yearIssued: row.bills[0].yearIssued,
+          }
+        : null,
+      beneficiarySplits: row.beneficiarySplits.map((s) => ({
+        id: s.id,
+        amountMinor: Number(s.amountMinor),
+        distributedMinor: Number(s.distributedAmountMinor),
+        currency: s.currency,
+        paidAt: s.paidAt?.toISOString() ?? null,
+        beneficiaryCode: s.beneficiary.code,
+        beneficiaryName: this.beneficiaries.formatFullName(
+          organizationId,
+          s.beneficiary.firstNameEnc,
+          s.beneficiary.lastNameEnc,
+        ),
+      })),
+      itemGrants: row.itemGrants.map((g) => ({
+        id: g.id,
+        quantity: Number(g.quantity),
+        unit: g.unit ?? g.item.unit,
+        itemId: g.item.id,
+        itemName: g.item.name,
+        beneficiaryCode: g.beneficiary.code,
+        beneficiaryName: this.beneficiaries.formatFullName(
+          organizationId,
+          g.beneficiary.firstNameEnc,
+          g.beneficiary.lastNameEnc,
+        ),
+      })),
+    };
   }
 
   async listByCampaign(organizationId: string, campaignId: string, limit = 50) {

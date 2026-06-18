@@ -17,6 +17,8 @@ import {
   CreateBeneficiaryDto,
   listBeneficiariesQuerySchema,
   ListBeneficiariesQuery,
+  donationPickSearchQuerySchema,
+  DonationPickSearchQuery,
   updateBeneficiarySchema,
   UpdateBeneficiaryDto,
   upsertSpouseSchema,
@@ -58,6 +60,16 @@ export class BeneficiaryController {
     @Query(new ZodValidationPipe(listBeneficiariesQuerySchema)) query: ListBeneficiariesQuery,
   ) {
     return this.service.list(orgId, query, user.departmentId);
+  }
+
+  @Get('donation-pick-search')
+  @RequirePerm({ permissions: ['donation.create.cash', 'beneficiary.read.summary'], mode: 'any' })
+  @AuditAction({ action: 'beneficiary.donation_pick_search' })
+  donationPickSearch(
+    @CurrentOrg() orgId: string,
+    @Query(new ZodValidationPipe(donationPickSearchQuerySchema)) query: DonationPickSearchQuery,
+  ) {
+    return this.service.searchForDonationPick(orgId, query);
   }
 
   @Post('rebuild-search-index')

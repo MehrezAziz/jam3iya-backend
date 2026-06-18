@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Param,
   Post,
   Query,
   UseGuards,
@@ -70,6 +71,16 @@ export class DonationController {
       user.departmentId,
       user.userId,
     );
+  }
+
+  @Get(':id')
+  @RequirePerm({ permissions: ['donor.read', 'donation.create.cash'], mode: 'any' })
+  getById(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+  ) {
+    return this.service.getById(orgId, id, user.departmentId);
   }
 
   @Post('cash')

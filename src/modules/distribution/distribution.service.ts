@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { isEndDateBeforeToday } from '../../common/utils/calendar-date';
 import type {
   CancelDistributionDto,
   CreateDistributionDto,
@@ -454,11 +455,14 @@ export class DistributionService {
   private async validateCampaignForSpend(organizationId: string, campaignId: string) {
     const campaign = await this.prisma.campaign.findFirst({
       where: { id: campaignId, organizationId, deletedAt: null },
-      select: { state: true },
+      select: { state: true, endsAt: true },
     });
     if (!campaign) throw new NotFoundException('Campaign not found');
     if (campaign.state === 'closed') {
       throw new BadRequestException('Cannot spend from a closed campaign');
+    }
+    if (campaign.endsAt && isEndDateBeforeToday(campaign.endsAt)) {
+      throw new BadRequestException('Cannot spend from a campaign whose end date has passed');
     }
   }
 

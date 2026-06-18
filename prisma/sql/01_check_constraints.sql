@@ -33,7 +33,9 @@ $$);
 SELECT pg_temp.add_check('donation', 'donation_kind_amount', $$
   (kind = 'in_kind' AND "inKindItemId" IS NOT NULL AND "inKindQuantity" IS NOT NULL)
   OR
-  (kind <> 'in_kind' AND "amountMinor" > 0)
+  (kind = 'cash' AND "amountMinor" >= 0)
+  OR
+  (kind NOT IN ('in_kind', 'cash') AND "amountMinor" > 0)
 $$);
 
 SELECT pg_temp.add_check('distribution_line', 'distribution_line_payload', $$

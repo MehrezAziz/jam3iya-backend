@@ -2,6 +2,14 @@ import { z } from 'zod';
 
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Expected YYYY-MM-DD date');
 
+export const beneficiaryLookupFieldSchema = z.enum(['name', 'phone', 'cin', 'code']);
+export type BeneficiaryLookupField = z.infer<typeof beneficiaryLookupFieldSchema>;
+
+export const beneficiaryLookupFieldsSchema = z
+  .array(beneficiaryLookupFieldSchema)
+  .min(1, 'Select at least one lookup field')
+  .max(4);
+
 export const createCampaignSchema = z
   .object({
     name: z.string().min(2).max(160),
@@ -14,6 +22,7 @@ export const createCampaignSchema = z
     currency: z.string().length(3).optional().default('TND'),
     visibleOnPublicPage: z.boolean().optional().default(true),
     state: z.enum(['draft', 'active', 'closed']).optional().default('draft'),
+    beneficiaryLookupFields: beneficiaryLookupFieldsSchema.optional().default(['name', 'phone', 'cin']),
   })
   .strict()
   .refine((data) => data.endsAt == null || data.startsAt <= data.endsAt, {
@@ -32,6 +41,7 @@ export const updateCampaignSchema = z
     targetAmountMinor: z.number().int().nonnegative().nullable().optional(),
     visibleOnPublicPage: z.boolean().optional(),
     state: z.enum(['draft', 'active', 'closed']).optional(),
+    beneficiaryLookupFields: beneficiaryLookupFieldsSchema.optional(),
   })
   .strict();
 export type UpdateCampaignDto = z.infer<typeof updateCampaignSchema>;
@@ -66,3 +76,26 @@ export const updateOccasionSchema = z
   })
   .strict();
 export type UpdateOccasionDto = z.infer<typeof updateOccasionSchema>;
+
+export const addCampaignBeneficiarySchema = z
+  .object({
+    beneficiaryId: z.string().uuid(),
+  })
+  .strict();
+export type AddCampaignBeneficiaryDto = z.infer<typeof addCampaignBeneficiarySchema>;
+
+export const quickCampaignBeneficiarySchema = z
+  .object({
+    firstName: z.string().min(1).max(200),
+    lastName: z.string().min(1).max(200),
+    isOrphan: z.boolean().optional().default(false),
+  })
+  .strict();
+export type QuickCampaignBeneficiaryDto = z.infer<typeof quickCampaignBeneficiarySchema>;
+
+export const updateBeneficiarySplitSchema = z
+  .object({
+    amountMinor: z.number().int().positive(),
+  })
+  .strict();
+export type UpdateBeneficiarySplitDto = z.infer<typeof updateBeneficiarySplitSchema>;

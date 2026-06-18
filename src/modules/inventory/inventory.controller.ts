@@ -13,12 +13,14 @@ import {
 import { InventoryService } from './inventory.service';
 import {
   adjustLotSchema,
+  setItemStockSchema,
   createItemSchema,
   createLotSchema,
   listItemsQuerySchema,
   updateItemSchema,
   updateLotSchema,
   type AdjustLotDto,
+  type SetItemStockDto,
   type CreateItemDto,
   type CreateLotDto,
   type ListItemsQuery,
@@ -61,9 +63,10 @@ export class InventoryController {
   @AuditAction({ action: 'inventory.item.create', resourceType: 'inventory_item', captureDiff: true })
   createItem(
     @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Body(new ZodValidationPipe(createItemSchema)) dto: CreateItemDto,
   ) {
-    return this.service.createItem(orgId, dto);
+    return this.service.createItem(orgId, user.userId, dto);
   }
 
   @Patch('items/:id')
@@ -75,6 +78,18 @@ export class InventoryController {
     @Body(new ZodValidationPipe(updateItemSchema)) dto: UpdateItemDto,
   ) {
     return this.service.updateItem(orgId, id, dto);
+  }
+
+  @Patch('items/:id/stock')
+  @RequirePerm('inventory.adjust')
+  @AuditAction({ action: 'inventory.item.set_stock', resourceType: 'inventory_item', resourceIdParam: 'id' })
+  setItemStock(
+    @CurrentOrg() orgId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(setItemStockSchema)) dto: SetItemStockDto,
+  ) {
+    return this.service.setItemStock(orgId, user.userId, id, dto.quantity, dto.reason);
   }
 
   @Delete('items/:id')

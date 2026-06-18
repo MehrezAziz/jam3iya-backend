@@ -12,3 +12,10 @@ export function calendarDateToday(): Date {
 export function isStartOnOrBeforeToday(startsAtIso: string): boolean {
   return parseCalendarDate(startsAtIso) <= calendarDateToday();
 }
+
+/** True when a calendar end date is strictly before today (end date is inclusive). */
+export function isEndDateBeforeToday(endsAt: Date | string): boolean {
+  const end =
+    typeof endsAt === 'string' ? parseCalendarDate(endsAt.slice(0, 10)) : endsAt;
+  return end < calendarDateToday();
+}

@@ -101,25 +101,51 @@ export class InventoryService {
     };
   }
 
-  async createItem(organizationId: string, dto: CreateItemDto) {
+  async createItem(organizationId: string, performedById: string, dto: CreateItemDto) {
     const exists = await this.prisma.inventoryItem.findFirst({
       where: { organizationId, name: dto.name, deletedAt: null },
       select: { id: true },
     });
     if (exists) throw new BadRequestException('Item name already exists in this organization');
 
-    return this.prisma.inventoryItem.create({
-      data: {
-        organizationId,
-        name: dto.name,
-        category: dto.category,
-        unit: dto.unit,
-        defaultQuantity: dto.defaultQuantity,
-        trackExpiry: dto.trackExpiry ?? false,
-        minStock: dto.minStock,
-        notes: dto.notes,
-      },
-      select: { id: true, name: true },
+    return this.prisma.$transaction(async (tx) => {
+      const item = await tx.inventoryItem.create({
+        data: {
+          organizationId,
+          name: dto.name,
+          category: dto.category,
+          unit: dto.unit,
+          defaultQuantity: dto.defaultQuantity,
+          trackExpiry: dto.trackExpiry ?? false,
+          minStock: dto.minStock,
+          notes: dto.notes,
+        },
+        select: { id: true, name: true },
+      });
+
+      const initialStock = dto.initialStock ?? 0;
+      if (initialStock > 0) {
+        const lot = await tx.stockLot.create({
+          data: {
+            itemId: item.id,
+            quantityInitial: initialStock,
+            quantityRemaining: initialStock,
+            currency: 'TND',
+            notes: 'Opening stock',
+          },
+        });
+        await tx.stockMovement.create({
+          data: {
+            lotId: lot.id,
+            type: 'in',
+            quantity: initialStock,
+            reason: 'initial_stock',
+            performedById,
+          },
+        });
+      }
+
+      return item;
     });
   }
 
@@ -254,6 +280,85 @@ export class InventoryService {
         },
       });
       return { id: lot.id, quantityRemaining: newRemaining };
+    });
+  }
+
+  async setItemStock(
+    organizationId: string,
+    performedById: string,
+    itemId: string,
+    targetQuantity: number,
+    reason?: string,
+  ) {
+    const item = await this.prisma.inventoryItem.findFirst({
+      where: { id: itemId, organizationId, deletedAt: null },
+      select: { id: true },
+    });
+    if (!item) throw new NotFoundException('Item not found');
+    if (targetQuantity < 0) throw new BadRequestException('Stock cannot be negative');
+
+    return this.prisma.$transaction(async (tx) => {
+      const lots = await tx.stockLot.findMany({
+        where: { itemId, deletedAt: null },
+        orderBy: [{ expiresOn: 'asc' }, { receivedAt: 'asc' }],
+        select: { id: true, quantityRemaining: true },
+      });
+
+      const current = lots.reduce((sum, lot) => sum + Number(lot.quantityRemaining), 0);
+      const delta = targetQuantity - current;
+      if (delta === 0) {
+        return { currentStock: current };
+      }
+
+      const movementReason = reason?.trim() || 'manual_stock_set';
+
+      if (delta > 0) {
+        const lot = await tx.stockLot.create({
+          data: {
+            itemId,
+            quantityInitial: delta,
+            quantityRemaining: delta,
+            currency: 'TND',
+            notes: movementReason,
+          },
+        });
+        await tx.stockMovement.create({
+          data: {
+            lotId: lot.id,
+            type: 'in',
+            quantity: delta,
+            reason: movementReason,
+            performedById,
+          },
+        });
+      } else {
+        let remaining = -delta;
+        for (const lot of lots) {
+          if (remaining <= 0) break;
+          const available = Number(lot.quantityRemaining);
+          if (available <= 0) continue;
+          const take = Math.min(remaining, available);
+          await tx.stockLot.update({
+            where: { id: lot.id },
+            data: { quantityRemaining: available - take },
+          });
+          await tx.stockMovement.create({
+            data: {
+              lotId: lot.id,
+              type: 'out',
+              quantity: take,
+              reason: movementReason,
+              performedById,
+            },
+          });
+          remaining -= take;
+        }
+        if (remaining > 0) {
+          throw new BadRequestException('Could not reduce stock to the requested level');
+        }
+      }
+
+      return { currentStock: targetQuantity };
     });
   }
 

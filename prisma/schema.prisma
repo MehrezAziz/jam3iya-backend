@@ -290,6 +290,13 @@ enum CampaignState {
   closed
 }
 
+enum BeneficiaryLookupField {
+  name
+  phone
+  cin
+  code
+}
+
 enum BillRecipientType {
   donor
   beneficiary
@@ -501,6 +508,9 @@ model DepartmentTransfer {
 enum BeneficiarySearchKind {
   name_token
   phone_prefix
+  first_name
+  last_name
+  digit_substring
 }
 
 model BeneficiarySearchIndex {
@@ -762,6 +772,8 @@ model Beneficiary {
   hasYellowNotebook Boolean @default(false)
   hasWhiteNotebook  Boolean @default(false)
   hasMonthlyGrant   Boolean @default(false)
+  /// Orphans are flagged for priority allocation / filtering.
+  isOrphan          Boolean @default(false)
 
   createdAt DateTime  @default(now()) @db.Timestamptz
   updatedAt DateTime  @updatedAt @db.Timestamptz
@@ -782,11 +794,15 @@ model Beneficiary {
   distributions    Distribution[]
   dedupRecords     CrossOrgDedupRecord[]
   searchIndexes    BeneficiarySearchIndex[]
+  campaignLinks    CampaignBeneficiary[]
+  donationSplits   DonationBeneficiarySplit[]
+  itemGrants       DonationItemGrant[]
 
   @@unique([organizationId, code])
   @@unique([organizationId, cinHash])
   @@index([organizationId])
   @@index([organizationId, status])
+  @@index([organizationId, isOrphan])
   @@index([organizationId, fullNameHash])
   @@index([organizationId, region])
   @@map("beneficiary")
@@ -1226,6 +1242,8 @@ model Donation {
   payments     Payment[]
   allocations  DonationAllocation[]
   bills        Bill[]               @relation("BillForDonation")
+  beneficiarySplits DonationBeneficiarySplit[]
+  itemGrants        DonationItemGrant[]
 
   @@index([organizationId])
   @@index([organizationId, receivedAt])
@@ -1432,6 +1450,7 @@ model InventoryItem {
   lots              StockLot[]
   distributionLines DistributionLine[]
   donations         Donation[]
+  itemGrants        DonationItemGrant[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -1474,11 +1493,13 @@ model StockMovement {
   quantity           Decimal           @db.Decimal(14, 3)
   reason             String?
   distributionLineId String?           @unique @db.Uuid
+  donationItemGrantId String?          @unique @db.Uuid
   performedById      String?           @db.Uuid
   performedAt        DateTime          @default(now()) @db.Timestamptz
 
   lot              StockLot          @relation(fields: [lotId], references: [id], onDelete: Restrict)
   distributionLine DistributionLine? @relation(fields: [distributionLineId], references: [id], onDelete: SetNull)
+  donationItemGrant DonationItemGrant? @relation(fields: [donationItemGrantId], references: [id], onDelete: SetNull)
 
   @@index([lotId])
   @@index([performedAt])
@@ -1559,9 +1580,11 @@ model Campaign {
   collectedAmountMinor   BigInt        @default(0)
   distributedAmountMinor BigInt        @default(0)
   currency               String        @default("TND") @db.Char(3)
-  state                  CampaignState @default(draft)
-  visibleOnPublicPage    Boolean       @default(true)
-  coverFileId            String?       @db.Uuid
+  state                  CampaignState              @default(draft)
+  visibleOnPublicPage    Boolean                    @default(true)
+  /// How staff search saved beneficiaries when recording donations for this campaign.
+  beneficiaryLookupFields BeneficiaryLookupField[]  @default([name, phone, cin])
+  coverFileId            String?                    @db.Uuid
   createdAt              DateTime      @default(now()) @db.Timestamptz
   updatedAt              DateTime      @updatedAt @db.Timestamptz
   deletedAt              DateTime?     @db.Timestamptz
@@ -1572,12 +1595,66 @@ model Campaign {
   pledges       Pledge[]
   distributions Distribution[]
   allocations   DonationAllocation[]
+  beneficiaries CampaignBeneficiary[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
   @@index([state])
   @@index([startsAt, endsAt])
   @@map("campaign")
+}
+
+model CampaignBeneficiary {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  campaignId    String   @db.Uuid
+  beneficiaryId String   @db.Uuid
+  createdAt     DateTime @default(now()) @db.Timestamptz
+
+  campaign    Campaign    @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, beneficiaryId])
+  @@index([campaignId])
+  @@index([beneficiaryId])
+  @@map("campaign_beneficiary")
+}
+
+model DonationBeneficiarySplit {
+  id                      String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  donationId              String    @db.Uuid
+  beneficiaryId           String    @db.Uuid
+  amountMinor             BigInt
+  distributedAmountMinor  BigInt    @default(0)
+  currency                String    @default("TND") @db.Char(3)
+  paidAt                  DateTime? @db.Timestamptz
+  createdAt               DateTime  @default(now()) @db.Timestamptz
+
+  donation    Donation    @relation(fields: [donationId], references: [id], onDelete: Cascade)
+  beneficiary Beneficiary @relation(fields: [beneficiaryId], references: [id], onDelete: Restrict)
+
+  @@index([donationId])
+  @@index([beneficiaryId])
+  @@map("donation_beneficiary_split")
+}
+
+model DonationItemGrant {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  donationId    String   @db.Uuid
+  beneficiaryId String   @db.Uuid
+  itemId        String   @db.Uuid
+  quantity      Decimal  @db.Decimal(14, 3)
+  unit          String?
+  createdAt     DateTime @default(now()) @db.Timestamptz
+
+  donation    Donation        @relation(fields: [donationId], references: [id], onDelete: Cascade)
+  beneficiary Beneficiary     @relation(fields: [beneficiaryId], references: [id], onDelete: Restrict)
+  item        InventoryItem   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  movement    StockMovement?
+
+  @@index([donationId])
+  @@index([beneficiaryId])
+  @@index([itemId])
+  @@map("donation_item_grant")
 }
 
 model Occasion {

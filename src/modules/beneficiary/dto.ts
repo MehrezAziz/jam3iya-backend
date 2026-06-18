@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { optionalCinSchema, requiredCinSchema } from '../../common/validators/cin';
 import { optionalPhoneSchema } from '../../common/validators/phone';
+import { beneficiaryLookupFieldSchema } from '../campaign/dto';
 
 const dateString = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -20,6 +21,7 @@ export const createBeneficiarySchema = z.object({
   publicAlias: z.string().max(120).optional(),
   departmentId: z.string().uuid(),
   reason: z.string().max(2000).optional(),
+  isOrphan: z.boolean().optional().default(false),
 });
 export type CreateBeneficiaryDto = z.infer<typeof createBeneficiarySchema>;
 
@@ -33,6 +35,7 @@ export const updateBeneficiarySchema = createBeneficiarySchema
     hasWhiteNotebook: z.boolean().optional(),
     hasMonthlyGrant: z.boolean().optional(),
     photoConsent: z.boolean().optional(),
+    isOrphan: z.boolean().optional(),
   });
 export type UpdateBeneficiaryDto = z.infer<typeof updateBeneficiarySchema>;
 
@@ -43,10 +46,31 @@ export const listBeneficiariesQuerySchema = z.object({
     .optional(),
   region: z.string().max(120).optional(),
   departmentId: z.string().uuid().optional(),
+  isOrphan: z.coerce.boolean().optional(),
   limit: z.coerce.number().min(1).max(200).default(50),
   offset: z.coerce.number().min(0).default(0),
+  /** Restrict search to specific beneficiary fields (name, phone, cin, code). */
+  fields: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? v.split(',').filter(Boolean) : v),
+      z.array(beneficiaryLookupFieldSchema).optional(),
+    )
+    .optional(),
 });
 export type ListBeneficiariesQuery = z.infer<typeof listBeneficiariesQuerySchema>;
+
+export const donationPickSearchQuerySchema = z.object({
+  q: z.string().min(2).max(200),
+  fields: z
+    .preprocess(
+      (v) => (typeof v === 'string' ? v.split(',').filter(Boolean) : v),
+      z.array(beneficiaryLookupFieldSchema).min(1),
+    ),
+  /** When set, results include whether each beneficiary is on the campaign list. Search is org-wide. */
+  campaignId: z.string().uuid().optional(),
+  limit: z.coerce.number().min(1).max(20).optional().default(10),
+});
+export type DonationPickSearchQuery = z.infer<typeof donationPickSearchQuerySchema>;
 
 // ----- sub-resources --------------------------------------------------------
 

@@ -29,6 +29,8 @@ export const createItemSchema = z
     defaultQuantity: z.number().positive().optional(),
     trackExpiry: z.boolean().optional().default(false),
     minStock: z.number().nonnegative().optional(),
+    /** Opening quantity — creates an initial stock lot when > 0. */
+    initialStock: z.number().nonnegative().optional(),
     notes: z.string().max(1000).optional(),
   })
   .strict();
@@ -73,6 +75,14 @@ export const updateLotSchema = z
   })
   .strict();
 export type UpdateLotDto = z.infer<typeof updateLotSchema>;
+
+export const setItemStockSchema = z
+  .object({
+    quantity: z.number().nonnegative(),
+    reason: z.string().min(3).max(400).optional(),
+  })
+  .strict();
+export type SetItemStockDto = z.infer<typeof setItemStockSchema>;
 
 export const adjustLotSchema = z
   .object({
